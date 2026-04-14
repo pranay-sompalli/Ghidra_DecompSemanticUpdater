@@ -22,6 +22,8 @@ ghidra_decompiler/          ← main Python package
     ├── __init__.py
     └── cerebras.py         ← Cerebras Cloud API integration
 
+binaries/                   ← drop binaries to decompile here (git-ignored)
+├── .gitkeep
 scripts/
 └── decompile_binary.py     ← runnable entry-point script
 
@@ -54,16 +56,30 @@ pip install cerebras-cloud-sdk pyghidra
    export CEREBRAS_API_KEY="your-key-here"
    ```
 
-2. Edit `BINARY_PATH` in `scripts/decompile_binary.py` (or set the `BINARY_PATH`
-   environment variable) to point at the binary you want to decompile.
-
-3. Run the pipeline:
+2. Copy the binary you want to decompile into the `binaries/` directory:
 
    ```bash
-   python scripts/decompile_binary.py
+   cp /path/to/your/binary binaries/
+   ```
+
+3. Run the pipeline, passing the binary name as an argument:
+
+   ```bash
+   python scripts/decompile_binary.py <binary_name>
+   ```
+
+   **Example:**
+   ```bash
+   python scripts/decompile_binary.py crackme0x06
    ```
 
    The sanitized, AI-enhanced C output is written to `output/<binary_name>_decompiled.c`.
+
+4. Get help:
+
+   ```bash
+   python scripts/decompile_binary.py --help
+   ```
 
 ---
 

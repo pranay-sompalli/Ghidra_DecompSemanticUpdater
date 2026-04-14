@@ -7,11 +7,13 @@ decompilation pipeline, and writes the sanitized C output to output/.
 
 Usage
 -----
-    python scripts/decompile_binary.py
+    python scripts/decompile_binary.py <binary_name>
 
-Configuration
--------------
-    Edit BINARY_PATH below (or set it via environment variable BINARY_PATH).
+    <binary_name> must be a file inside the project's binaries/ directory.
+
+Example
+-------
+    python scripts/decompile_binary.py crackme0x06
 """
 
 import os
@@ -34,19 +36,27 @@ from ghidra_decompiler import (
 # Configuration
 # ---------------------------------------------------------------------------
 
-BINARY_PATH = os.environ.get(
-    "BINARY_PATH",
-    "/Users/pranaysompalli/Downloads/hello_stripped",
-)
+BINARIES_DIR = os.path.join(_repo_root, "binaries")
+OUTPUT_DIR   = os.path.join(_repo_root, "output")
 
-OUTPUT_DIR = os.path.join(_repo_root, "output")
+
+def _parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="AI-enhanced Ghidra decompilation pipeline",
+    )
+    parser.add_argument(
+        "binary",
+        help="Name of the binary file inside the project's binaries/ directory",
+    )
+    return parser.parse_args()
 
 
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run_decompiler():
+def run_decompiler(binary_path):
     # Start PyGhidra fully in headless mode first
     pyghidra.start()
 
@@ -54,7 +64,7 @@ def run_decompiler():
     from java.io import File
 
     builder = pyghidra.program_loader()
-    builder.source(File(BINARY_PATH))
+    builder.source(File(binary_path))
 
     # Load the program
     results = builder.load()
@@ -134,7 +144,7 @@ def run_decompiler():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     output_filename = os.path.join(
         OUTPUT_DIR,
-        f"{os.path.basename(BINARY_PATH)}_decompiled.c",
+        f"{os.path.basename(binary_path)}_decompiled.c",
     )
 
     with open(output_filename, "w") as f:
@@ -147,4 +157,11 @@ def run_decompiler():
 
 
 if __name__ == "__main__":
-    run_decompiler()
+    args = _parse_args()
+    binary_path = os.path.join(BINARIES_DIR, args.binary)
+
+    if not os.path.isfile(binary_path):
+        print(f"Error: binary '{args.binary}' not found in {BINARIES_DIR}/")
+        sys.exit(1)
+
+    run_decompiler(binary_path)

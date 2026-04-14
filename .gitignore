@@ -14,3 +14,7 @@ build/
 # Generated decompiled output — ignore everything except the placeholder
 output/
 !output/.gitkeep
+
+# Binaries to decompile — never commit binary files
+binaries/
+!binaries/.gitkeep
