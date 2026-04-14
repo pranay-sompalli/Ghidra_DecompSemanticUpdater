@@ -1,25 +1,29 @@
 """
-cerebras_suggestions.py
------------------------
-Uses Cerebras AI API (model: llama3.1-8b) to suggest semantically
-meaningful variable names/types and parameter names/types for a decompiled
-C function.
+ghidra_decompiler.ai.cerebras
+-------------------------------
+Uses the Cerebras Cloud API to suggest semantically meaningful variable names,
+parameter names, types, and required #include / #define directives for a
+decompiled C function.
 
-Note: gpt-oss-120b and qwen-3-235b-a22b-instruct-2507 are other options, 
-but llama3.1-8b is the default.
+Supported models
+----------------
+    llama3.1-8b           (default — fastest)
+    qwen-3-235b-a22b-instruct-2507
+    gpt-oss-120b
 
-Environment variable required:
+Environment variable required
+------------------------------
     CEREBRAS_API_KEY  — your Cerebras Cloud API key
 
-Public API:
-    get_cerebras_suggestions(decompiled_c: str) -> dict
+Public API
+----------
+    get_cerebras_suggestions(decompiled_c, model="llama3.1-8b", context_c=None) -> dict
 
     Returns:
         {
             "function_name": "suggested_name",
             "variables": [
                 {"name": "local_8",  "new_name": "counter",  "new_type_str": "int"},
-
                 ...
             ],
             "parameters": [
@@ -27,10 +31,10 @@ Public API:
                 ...
             ],
             "includes": ["<stdio.h>", "<stdlib.h>"],
-            "defines": ["#define MAX_SIZE 256"]
+            "defines":  ["#define MAX_SIZE 256"],
         }
 
-    On any failure the function returns a dict with empty lists for the keys so
+    On any failure the function returns a dict with empty lists for all keys so
     the caller can always iterate safely.
 """
 
@@ -81,7 +85,7 @@ JSON schema (strict):
 """
 
 _USER_PROMPT_TEMPLATE = """\
-{context_header}
+{context_header}\
 Analyze the following decompiled C function and suggest better variable and \
 parameter names/types. Return ONLY the JSON object described in the system prompt.
 
@@ -106,19 +110,20 @@ def get_cerebras_suggestions(decompiled_c, model="llama3.1-8b", context_c=None):
     decompiled_c : str
         Raw decompiled C code string from Ghidra's DecompInterface.
     model : str
-        The model ID to use for suggestions. 
-        Default is "llama3.1-8b".
+        The Cerebras model ID to use.  Default is "llama3.1-8b".
     context_c : str, optional
-        Additional C code (e.g., main function) to provide as reference 
+        Additional C code (e.g., main function) to provide as reference
         for naming and structural consistency.
 
     Returns
     -------
-    dict with keys "variables", "parameters", "includes", and "defines".
-        "variables" and "parameters" are lists of dicts: {"name": str, "new_name": str, "new_type_str": str}
+    dict
+        Keys: "function_name", "variables", "parameters", "includes", "defines".
+        "variables" and "parameters" are lists of dicts:
+            {"name": str, "new_name": str, "new_type_str": str}
         "includes" and "defines" are lists of strings.
     """
-    _empty = {"variables": [], "parameters": [], "includes": [], "defines": []}
+    _empty = {"function_name": None, "variables": [], "parameters": [], "includes": [], "defines": []}
 
     api_key = os.environ.get("CEREBRAS_API_KEY")
     if not api_key:
@@ -144,7 +149,7 @@ def get_cerebras_suggestions(decompiled_c, model="llama3.1-8b", context_c=None):
 
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         context_header=context_header,
-        decompiled_c=decompiled_c.strip()
+        decompiled_c=decompiled_c.strip(),
     )
 
     try:
@@ -176,7 +181,6 @@ def get_cerebras_suggestions(decompiled_c, model="llama3.1-8b", context_c=None):
     return _parse_suggestions(raw_text)
 
 
-
 # ---------------------------------------------------------------------------
 # Response parsing
 # ---------------------------------------------------------------------------
@@ -186,7 +190,7 @@ def _parse_suggestions(raw_text):
     Extract and validate the JSON suggestions from the LLM response text.
     Handles cases where the model wraps JSON in markdown code fences.
     """
-    _empty = {"variables": [], "parameters": [], "includes": [], "defines": []}
+    _empty = {"function_name": None, "variables": [], "parameters": [], "includes": [], "defines": []}
 
     if not raw_text:
         return _empty
@@ -208,26 +212,29 @@ def _parse_suggestions(raw_text):
     variables  = _sanitize_list(data.get("variables",  []), "variables")
     parameters = _sanitize_list(data.get("parameters", []), "parameters")
     includes   = data.get("includes", [])
-    defines    = data.get("defines", [])
+    defines    = data.get("defines",  [])
 
-    print("[Cerebras] Suggestions — Function='{}', {} variable(s), {} parameter(s), {} include(s), {} define(s)".format(
-        func_name, len(variables), len(parameters), len(includes), len(defines)))
-        
+    print("[Cerebras] Suggestions — Function='{}', {} variable(s), {} parameter(s), "
+          "{} include(s), {} define(s)".format(
+              func_name, len(variables), len(parameters), len(includes), len(defines)))
+
     for v in variables:
-        print("  [Cerebras] Variable: {} -> {} ({})".format(v.get("name"), v.get("new_name"), v.get("new_type_str")))
+        print("  [Cerebras] Variable: {} -> {} ({})".format(
+            v.get("name"), v.get("new_name"), v.get("new_type_str")))
     for p in parameters:
-        print("  [Cerebras] Parameter: {} -> {} ({})".format(p.get("name"), p.get("new_name"), p.get("new_type_str")))
+        print("  [Cerebras] Parameter: {} -> {} ({})".format(
+            p.get("name"), p.get("new_name"), p.get("new_type_str")))
     for inc in includes:
         print("  [Cerebras] Include: {}".format(inc))
     for dfn in defines:
         print("  [Cerebras] Define: {}".format(dfn))
 
     return {
-        "function_name": func_name, 
-        "variables": variables, 
-        "parameters": parameters,
-        "includes": includes,
-        "defines": defines
+        "function_name": func_name,
+        "variables":     variables,
+        "parameters":    parameters,
+        "includes":      includes,
+        "defines":       defines,
     }
 
 
@@ -243,16 +250,14 @@ def _sanitize_list(items, label):
 
     for item in items:
         if not isinstance(item, dict):
-            print("[Cerebras] WARNING: dropping non-dict item in '{}': {}".format(
-                label, item))
+            print("[Cerebras] WARNING: dropping non-dict item in '{}': {}".format(label, item))
             continue
         if "name" not in item:
-            print("[Cerebras] WARNING: dropping item missing 'name' in '{}': {}".format(
-                label, item))
+            print("[Cerebras] WARNING: dropping item missing 'name' in '{}': {}".format(label, item))
             continue
         # Supply defaults for optional fields so callers don't need to guard
-        item.setdefault("new_name",     item["name"])   # keep current if not provided
-        item.setdefault("new_type_str", None)           # None → don't retype
+        item.setdefault("new_name",     item["name"])  # keep current if not provided
+        item.setdefault("new_type_str", None)          # None → don't retype
         result.append(item)
 
     return result

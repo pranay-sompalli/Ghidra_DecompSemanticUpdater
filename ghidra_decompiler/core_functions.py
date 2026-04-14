@@ -1,4 +1,16 @@
-from findMain import find_main
+"""
+ghidra_decompiler.core_functions
+---------------------------------
+Utilities for collecting the set of user-defined .text functions reachable
+from main via BFS.
+
+Public API
+----------
+    getCoreFunctions(coreFunctions, program=None) -> dict[str, Function]
+"""
+
+from ghidra_decompiler.find_main import find_main
+
 
 def _get_outgoing_funcs(func, coreFunctions):
     """
@@ -7,26 +19,37 @@ def _get_outgoing_funcs(func, coreFunctions):
     automatically excluded since they won't be in the dict.
     """
     from ghidra.util.task import ConsoleTaskMonitor
-    
+
     called = func.getCalledFunctions(ConsoleTaskMonitor())
     return [coreFunctions[cf.getName()] for cf in called if cf.getName() in coreFunctions]
+
 
 def getCoreFunctions(coreFunctions, program=None):
     """
     Starting from main (found via find_main), BFS through all outgoing calls
     to collect every reachable user-defined function.
-    """
-    filteredFunctions = {}
 
-    # Step 1: Find main using the priority chain
+    Parameters
+    ----------
+    coreFunctions : dict[str, Function]
+        All .text functions keyed by name (typically filtered by section).
+    program : ghidra.program.model.listing.Program, optional
+        Required only when find_main needs to probe the entry-point symbol table.
+
+    Returns
+    -------
+    dict[str, Function]
+        Subset of coreFunctions reachable from main, with "main" always first.
+    """
+    filtered = {}
+
     main_func = find_main(coreFunctions, program)
     if not main_func:
-        return filteredFunctions
+        return filtered
 
-    # Step 2: BFS from main, only following functions in coreFunctions
-    queue = [main_func]
+    queue   = [main_func]
     visited = set()
-    filteredFunctions["main"] = main_func
+    filtered["main"] = main_func
 
     while queue:
         func = queue.pop(0)
@@ -35,10 +58,10 @@ def getCoreFunctions(coreFunctions, program=None):
             continue
         visited.add(name)
         if func != main_func:
-            filteredFunctions[name] = func
+            filtered[name] = func
 
         for callee in _get_outgoing_funcs(func, coreFunctions):
             if callee.getName() not in visited:
                 queue.append(callee)
 
-    return filteredFunctions
+    return filtered

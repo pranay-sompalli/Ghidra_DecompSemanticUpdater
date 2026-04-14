@@ -1,0 +1,22 @@
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name        = "ghidra-decompiler"
+version     = "0.1.0"
+description = "AI-enhanced Ghidra decompilation pipeline using the Cerebras Cloud API"
+readme      = "README.md"
+requires-python = ">=3.9"
+
+dependencies = [
+    "cerebras-cloud-sdk",
+    "pyghidra",
+]
+
+[project.scripts]
+decompile-binary = "scripts.decompile_binary:run_decompiler"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ghidra_decompiler*"]
