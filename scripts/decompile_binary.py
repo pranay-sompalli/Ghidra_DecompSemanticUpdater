@@ -105,7 +105,7 @@ def run_decompiler(binary_path):
 
     # ── AI-enhanced decompilation pipeline ──────────────────────────────────
     stored_suggestions = enhance_decompilation_with_ai(
-        program, iface, core_funcs, skip_ai_for_funcs=["main"]
+        program, iface, core_funcs
     )
 
     # ── Final pass: collect headers/defines then re-decompile ────────────────
