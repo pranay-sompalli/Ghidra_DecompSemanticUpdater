@@ -57,11 +57,10 @@ def find_main(coreFunctions, program):
     """
     Locate the main function using a priority chain of strategies:
 
-    1. If 'start' exists, trace its __libc_start_main argument.
-    2. If a function named 'entry' or 'main' exists:
-       - If it calls __libc_start_main internally, treat it as start and trace main.
-       - Otherwise return it directly as main.
-    3. Fall back to the function at the program's recorded entry point address.
+    1. If 'main' exists in coreFunctions, return it directly.
+    2. If 'entry' exists, return it unless it explicitly calls __libc_start_main.
+    3. If 'start' exists, trace its __libc_start_main argument.
+    4. Fall back to the function at the program's recorded entry point address.
 
     Parameters
     ----------
@@ -73,40 +72,51 @@ def find_main(coreFunctions, program):
     -------
     Function | None
     """
-    # Strategy 1: start -> __libc_start_main -> main
+    from ghidra.util.task import ConsoleTaskMonitor
+
+    # Strategy 1: Explicit 'main'
+    if "main" in coreFunctions:
+        print("    -> [Strategy] Found 'main' directly in .text")
+        return coreFunctions["main"]
+
+    # Strategy 2: 'entry' (trace only if it looks like a libc startup trampoline)
+    if "entry" in coreFunctions:
+        candidate = coreFunctions["entry"]
+        called_names = [f.getName() for f in candidate.getCalledFunctions(ConsoleTaskMonitor())]
+        if "__libc_start_main" in called_names:
+            traced = _get_main_from_start(candidate)
+            if traced:
+                print(f"    -> [Strategy] 'entry' calls __libc_start_main, traced real main: {traced.getName()}")
+                return traced
+        
+        print("    -> [Strategy] Found 'entry' directly in .text")
+        return candidate
+
+    # Strategy 3: 'start' -> usually boilerplate, always trace
     if "start" in coreFunctions:
         result = _get_main_from_start(coreFunctions["start"])
         if result:
+            print(f"    -> [Strategy] 'start' detected, traced real main: {result.getName()}")
             return result
 
-    # Strategy 2: function literally named 'main' or 'entry' in .text
-    for candidate_name in ("main", "entry"):
-        if candidate_name in coreFunctions:
-            candidate = coreFunctions[candidate_name]
-            # Check if this function acts like a _start (calls __libc_start_main)
-            traced = _get_main_from_start(candidate)
-            if traced:
-                print(f"    -> [FALLBACK] '{candidate_name}' is a _start-like function, "
-                      f"traced real main: {traced.getName()}")
-                return traced
-            else:
-                print(f"    -> [FALLBACK] Found '{candidate_name}' directly in .text")
-                return candidate
-
-    # Strategy 3: function at the program's recorded entry point address
+    # Strategy 4: function at the program's recorded entry point address
     entry_addrs = program.getSymbolTable().getExternalEntryPointIterator()
     fm = program.getFunctionManager()
     while entry_addrs.hasNext():
         addr = entry_addrs.next()
         func = fm.getFunctionAt(addr)
         if func and func.getName() in coreFunctions:
-            traced = _get_main_from_start(coreFunctions[func.getName()])
-            if traced:
-                print(f"    -> [FALLBACK] Entry point '{func.getName()}' is _start-like, "
-                      f"traced main: {traced.getName()}")
-                return traced
-            print(f"    -> [FALLBACK] Found entry point function: {func.getName()}")
-            return coreFunctions[func.getName()]
+            candidate = coreFunctions[func.getName()]
+            called_names = [f.getName() for f in candidate.getCalledFunctions(ConsoleTaskMonitor())]
+            if "__libc_start_main" in called_names or func.getName() == "start":
+                traced = _get_main_from_start(candidate)
+                if traced:
+                    print(f"    -> [Strategy] Entry point '{func.getName()}' is boilerplate, "
+                          f"traced main: {traced.getName()}")
+                    return traced
+            
+            print(f"    -> [Strategy] Using entry point function directly: {func.getName()}")
+            return candidate
 
     print("    -> [ERROR] Could not find main function")
     return None

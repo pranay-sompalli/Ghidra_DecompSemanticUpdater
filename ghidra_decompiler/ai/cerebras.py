@@ -63,11 +63,13 @@ Rules:
 - If a variable or parameter already has a reasonable name, you may keep it
   (omit from the list or repeat the same name).
 - Suggest any necessary standard C headers (as #include directives, e.g. "<stdio.h>") and any necessary #define macros or constants that the code might rely on to successfully compile.
+- Provide a "context" field which is a concise (1-2 sentence) technical summary of what the function does and its primary goal.
 - Return ONLY a single valid JSON object — no markdown, no prose.
 
 JSON schema (strict):
 {
   "function_name": "<new_function_name>",
+  "context": "<brief_summary_of_function_purpose>",
   "variables": [
     {"name": "<current_name>", "new_name": "<suggested_name>", "new_type_str": "<c_type>"}
   ],
@@ -209,6 +211,7 @@ def _parse_suggestions(raw_text):
 
     # Validate and sanitize
     func_name  = data.get("function_name", None)
+    context    = data.get("context",       None)
     variables  = _sanitize_list(data.get("variables",  []), "variables")
     parameters = _sanitize_list(data.get("parameters", []), "parameters")
     includes   = data.get("includes", [])
@@ -217,6 +220,8 @@ def _parse_suggestions(raw_text):
     print("[Cerebras] Suggestions — Function='{}', {} variable(s), {} parameter(s), "
           "{} include(s), {} define(s)".format(
               func_name, len(variables), len(parameters), len(includes), len(defines)))
+    if context:
+        print("  [Cerebras] Context: {}".format(context))
 
     for v in variables:
         print("  [Cerebras] Variable: {} -> {} ({})".format(
@@ -231,6 +236,7 @@ def _parse_suggestions(raw_text):
 
     return {
         "function_name": func_name,
+        "context":       context,
         "variables":     variables,
         "parameters":    parameters,
         "includes":      includes,

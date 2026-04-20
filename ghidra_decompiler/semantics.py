@@ -46,6 +46,28 @@ def change_function_name(program, func, new_name):
         program.endTransaction(txId, True)
 
 
+def set_function_comment(program, func, comment):
+    """
+    Apply a PLATE comment to the function's entry point.
+    """
+    from ghidra.program.model.listing import CodeUnit
+
+    txId = program.startTransaction("Set Function Comment: " + func.getName())
+    try:
+        listing = program.getListing()
+        code_unit = listing.getCodeUnitAt(func.getEntryPoint())
+        if code_unit:
+            code_unit.setComment(CodeUnit.PLATE_COMMENT, comment)
+            print("[{}] Added context comment to '{}'".format(
+                func.getEntryPoint(), func.getName()))
+        return True
+    except Exception as e:
+        print("Error setting comment for {}: {}".format(func.getName(), str(e)))
+        return False
+    finally:
+        program.endTransaction(txId, True)
+
+
 def change_function_parameters(program, func, new_params, update_type=None):
     """
     Completely replace a function's parameters.
@@ -389,5 +411,11 @@ def apply_cerebras_suggestions(program, func, suggestions):
         'parameters', and optionally 'function_name'.
     """
     func_name = _apply_function_name_suggestion(program, func, suggestions)
+    
+    # Apply function context (purpose) as a header comment
+    context = suggestions.get("context")
+    if context:
+        set_function_comment(program, func, context)
+
     _apply_variable_suggestions(program, func, func_name, suggestions)
     _apply_parameter_suggestions(program, func, func_name, suggestions)
