@@ -27,6 +27,7 @@ if _repo_root not in sys.path:
 import pyghidra
 from ghidra_decompiler import (
     enhance_decompilation_with_ai,
+    DecompilerPipeline,
     strip_leading_underscores,
     sanitize_c_code,
     getCoreFunctions,
@@ -104,9 +105,8 @@ def run_decompiler(binary_path):
     core_funcs = getCoreFunctions(coreFunctions, program)
 
     # ── AI-enhanced decompilation pipeline ──────────────────────────────────
-    stored_suggestions = enhance_decompilation_with_ai(
-        program, iface, core_funcs
-    )
+    pipeline = DecompilerPipeline(program, iface, core_funcs)
+    stored_suggestions = pipeline.execute_full_pipeline()
 
     # ── Final pass: collect headers/defines then re-decompile ────────────────
     all_includes = set()

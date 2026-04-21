@@ -22,8 +22,8 @@ def align_usage_with_called_functions(program, caller_func, caller_c_code, core_
     """
     Parse the decompiled C code of a caller function to find calls to core functions.
     Aligns naming usage:
-    - If caller passes a meaningful variable name to a callee's generic parameter,
-      renames the callee's parameter.
+    - If caller passes a meaningful variable name to a callee's parameter,
+      renames the callee's parameter to match for consistency.
     - If callee has a meaningful parameter name but caller passes a generic variable,
       renames the caller's variable.
     """
@@ -38,9 +38,11 @@ def align_usage_with_called_functions(program, caller_func, caller_c_code, core_
         if callee_name == caller_func.getName():
             continue
 
-        pattern = r'\b' + re.escape(callee_name) + r'\s*\(([^)]*)\)'
+        # Regex to find function calls.
+        pattern = r'\b' + re.escape(callee_name) + r'\s*\(([^;]*?)\)\s*[;{]'
         for match in re.finditer(pattern, caller_c_code):
-            args = [a.strip() for a in match.group(1).split(",")]
+            raw_args = match.group(1)
+            args = [a.strip() for a in raw_args.split(",")]
 
             callee_params    = list(callee_func.getParameters())
             new_callee_params = ArrayList()
@@ -48,58 +50,60 @@ def align_usage_with_called_functions(program, caller_func, caller_c_code, core_
             callee_var_names = {v.getName() for v in callee_func.getAllVariables()}
 
             for i, a in enumerate(args):
-                a = clean_c_argument(a)
+                if i >= len(callee_params):
+                    break
 
-                caller_has_good_name = re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', a) and not is_generic_name(a)
-                caller_is_generic    = re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', a) and is_generic_name(a)
+                clean_arg = clean_c_argument(a)
 
-                callee_old_name  = callee_params[i].getName() if i < len(callee_params) else None
+                # A "good name" is any name that is not a Ghidra auto-generated generic name.
+                caller_has_good_name = re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', clean_arg) and not is_generic_name(clean_arg)
+                caller_is_generic    = re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', clean_arg) and is_generic_name(clean_arg)
+
+                callee_old_name  = callee_params[i].getName()
                 callee_has_good_name = callee_old_name and not is_generic_name(callee_old_name)
-                callee_is_generic    = callee_old_name and is_generic_name(callee_old_name)  # noqa: F841
 
-                if i < len(callee_params):
-                    proposed_callee_name = callee_old_name
-                    proposed_callee_type = callee_params[i].getDataType()
+                proposed_callee_name = callee_old_name
+                proposed_callee_type = callee_params[i].getDataType()
 
-                    if a in caller_vars:
-                        caller_type = caller_vars[a].getDataType()
-                        if str(proposed_callee_type) != str(caller_type) and "undefined" not in str(caller_type):
-                            proposed_callee_type = caller_type
-                            callee_changed = True
-                            print("[Alignment] Caller '{}' -> Callee '{}' arg {}: propagating type '{}'".format(
-                                caller_func.getName(), callee_name, i, caller_type))
+                # 1. Type Propagation (Caller -> Callee)
+                if clean_arg in caller_vars:
+                    caller_type = caller_vars[clean_arg].getDataType()
+                    if str(proposed_callee_type) != str(caller_type) and "undefined" not in str(caller_type):
+                        proposed_callee_type = caller_type
+                        callee_changed = True
+                        print("[Alignment] Caller '{}' -> Callee '{}' arg {}: propagating type '{}'".format(
+                            caller_func.getName(), callee_name, i, caller_type))
 
-                    if caller_has_good_name and callee_old_name != a:
-                        if a in callee_var_names:
-                            print("[Alignment] Callee '{}' already has a variable named '{}'. "
-                                  "Skipping rename to avoid collision.".format(callee_name, a))
-                        else:
-                            proposed_callee_name = a
-                            print("[Alignment] Caller '{}' -> Callee '{}' arg {}: renaming param '{}' -> '{}'".format(
-                                caller_func.getName(), callee_name, i, callee_old_name, a))
-                            callee_changed = True
-                            callee_var_names.add(a)
+                # 2. Name Propagation (Caller -> Callee)
+                # If caller has a meaningful name, always propagate it down to the callee.
+                if caller_has_good_name and callee_old_name != clean_arg:
+                    if clean_arg in callee_var_names and clean_arg != callee_old_name:
+                        print("[Alignment] Callee '{}' already has a variable named '{}'. Skipping rename.".format(
+                            callee_name, clean_arg))
+                    else:
+                        proposed_callee_name = clean_arg
+                        print("[Alignment] Caller '{}' -> Callee '{}' arg {}: renaming param '{}' -> '{}'".format(
+                            caller_func.getName(), callee_name, i, callee_old_name, clean_arg))
+                        callee_changed = True
+                        callee_var_names.add(clean_arg)
 
-                    elif callee_has_good_name and caller_is_generic:
-                        callee_type     = callee_params[i].getDataType()
-                        final_prop_type = callee_type
+                # 3. Name Propagation (Callee -> Caller)
+                elif callee_has_good_name and caller_is_generic:
+                    callee_type     = callee_params[i].getDataType()
+                    final_prop_type = callee_type
 
-                        if is_pointer_type(callee_type):
-                            final_prop_type = None
-                            print("[Alignment] Callee '{}' -> Caller '{}': name propagated, but type propagation "
-                                  "skipped for pointer type on local variable '{}'".format(
-                                      callee_name, caller_func.getName(), a))
+                    if is_pointer_type(callee_type):
+                        final_prop_type = None  # Avoid unsafe pointer propagation to stack vars
 
-                        caller_var_updates.append({
-                            "name":     a,
-                            "new_name": callee_old_name,
-                            "new_type": final_prop_type,
-                        })
-                        print("[Alignment] Callee '{}' -> Caller '{}': renaming variable '{}' -> '{}'{}".format(
-                            callee_name, caller_func.getName(), a, callee_old_name,
-                            " and propagating type" if final_prop_type else ""))
+                    caller_var_updates.append({
+                        "name":     clean_arg,
+                        "new_name": callee_old_name,
+                        "new_type": final_prop_type,
+                    })
+                    print("[Alignment] Callee '{}' -> Caller '{}': renaming variable '{}' -> '{}'".format(
+                        callee_name, caller_func.getName(), clean_arg, callee_old_name))
 
-                    new_callee_params.add(ParameterImpl(proposed_callee_name, proposed_callee_type, program))
+                new_callee_params.add(ParameterImpl(proposed_callee_name, proposed_callee_type, program))
 
             if callee_changed:
                 change_function_parameters(
@@ -108,7 +112,7 @@ def align_usage_with_called_functions(program, caller_func, caller_c_code, core_
                 )
 
     if caller_var_updates:
-        # Deduplicate updates (keep first occurrence per variable name)
+        # Deduplicate updates
         unique_updates = []
         seen = set()
         for u in caller_var_updates:
@@ -116,3 +120,4 @@ def align_usage_with_called_functions(program, caller_func, caller_c_code, core_
                 seen.add(u["name"])
                 unique_updates.append(u)
         update_variable_names_and_types(program, caller_func, unique_updates)
+

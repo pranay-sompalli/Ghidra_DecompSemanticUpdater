@@ -10,7 +10,7 @@ Public API
     from ghidra_decompiler import sanitize_c_code, strip_leading_underscores
 """
 
-from ghidra_decompiler.pipeline import enhance_decompilation_with_ai
+from ghidra_decompiler.pipeline import enhance_decompilation_with_ai, DecompilerPipeline
 from ghidra_decompiler.semantics import (
     strip_leading_underscores,
     update_function_semantics,
@@ -27,6 +27,7 @@ from ghidra_decompiler.find_main import find_main
 
 __all__ = [
     "enhance_decompilation_with_ai",
+    "DecompilerPipeline",
     "strip_leading_underscores",
     "update_function_semantics",
     "update_variable_names_and_types",
