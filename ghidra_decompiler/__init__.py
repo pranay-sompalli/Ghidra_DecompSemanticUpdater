@@ -2,7 +2,7 @@
 ghidra_decompiler
 =================
 A Python package for automating Ghidra decompilation with AI-driven semantic
-improvements via the Cerebras API.
+improvements via the OpenRouter API.
 
 Public API
 ----------
@@ -17,7 +17,7 @@ from ghidra_decompiler.semantics import (
     update_variable_names_and_types,
     change_function_name,
     change_function_parameters,
-    apply_cerebras_suggestions,
+    apply_openrouter_suggestions,
 )
 from ghidra_decompiler.code_utils import sanitize_c_code, is_generic_name, clean_c_argument
 from ghidra_decompiler.type_utils import resolve_type, is_array_type, is_pointer_type
@@ -33,7 +33,7 @@ __all__ = [
     "update_variable_names_and_types",
     "change_function_name",
     "change_function_parameters",
-    "apply_cerebras_suggestions",
+    "apply_openrouter_suggestions",
     "sanitize_c_code",
     "is_generic_name",
     "clean_c_argument",

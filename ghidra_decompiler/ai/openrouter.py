@@ -1,23 +1,23 @@
 """
-ghidra_decompiler.ai.cerebras
+ghidra_decompiler.ai.openrouter
 -------------------------------
-Uses the Cerebras Cloud API to suggest semantically meaningful variable names,
+Uses the OpenRouter API to suggest semantically meaningful variable names,
 parameter names, types, and required #include / #define directives for a
 decompiled C function.
 
 Supported models
 ----------------
-    llama3.1-8b           (default — fastest)
-    qwen-3-235b-a22b-instruct-2507
-    gpt-oss-120b
+    meta-llama/llama-3.1-8b-instruct (default — fast)
+    qwen/qwen-2.5-72b-instruct
+    anthropic/claude-3.5-sonnet
 
 Environment variable required
 ------------------------------
-    CEREBRAS_API_KEY  — your Cerebras Cloud API key
+    OPEN_ROUTER_API_KEY  — your OpenRouter API key
 
 Public API
 ----------
-    get_cerebras_suggestions(decompiled_c, model="llama3.1-8b", context_c=None) -> dict
+    get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-instruct", context_c=None) -> dict
 
     Returns:
         {
@@ -103,16 +103,16 @@ Keep parameter and variable names consistent with any reference context provided
 # Main public function
 # ---------------------------------------------------------------------------
 
-def get_cerebras_suggestions(decompiled_c, model="llama3.1-8b", context_c=None):
+def get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-instruct", context_c=None):
     """
-    Send decompiled_c to the Cerebras API and return name/type suggestions.
+    Send decompiled_c to the OpenRouter API and return name/type suggestions.
 
     Parameters
     ----------
     decompiled_c : str
         Raw decompiled C code string from Ghidra's DecompInterface.
     model : str
-        The Cerebras model ID to use.  Default is "llama3.1-8b".
+        The OpenRouter model ID to use.  Default is "meta-llama/llama-3.1-8b-instruct".
     context_c : str, optional
         Additional C code (e.g., main function) to provide as reference
         for naming and structural consistency.
@@ -127,23 +127,26 @@ def get_cerebras_suggestions(decompiled_c, model="llama3.1-8b", context_c=None):
     """
     _empty = {"function_name": None, "variables": [], "parameters": [], "includes": [], "defines": []}
 
-    api_key = os.environ.get("CEREBRAS_API_KEY")
+    api_key = os.environ.get("OPEN_ROUTER_API_KEY")
     if not api_key:
-        print("[Cerebras] ERROR: CEREBRAS_API_KEY not set in environment.")
+        print("[OpenRouter] ERROR: OPEN_ROUTER_API_KEY not set in environment.")
         return _empty
 
     if not decompiled_c or not decompiled_c.strip():
-        print("[Cerebras] WARNING: empty decompiled_c, skipping.")
+        print("[OpenRouter] WARNING: empty decompiled_c, skipping.")
         return _empty
 
     try:
-        from cerebras.cloud.sdk import Cerebras
+        from openai import OpenAI
     except ImportError:
-        print("[Cerebras] ERROR: cerebras-cloud-sdk not installed. "
-              "Run: pip install cerebras-cloud-sdk")
+        print("[OpenRouter] ERROR: openai not installed. "
+              "Run: pip install openai")
         return _empty
 
-    client = Cerebras(api_key=api_key)
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
 
     context_header = ""
     if context_c:
@@ -166,18 +169,19 @@ def get_cerebras_suggestions(decompiled_c, model="llama3.1-8b", context_c=None):
             temperature=0.2,
         )
     except Exception as e:
-        print("[Cerebras] API call failed: {}".format(e))
+        print("[OpenRouter] API call failed: {}".format(e))
         return _empty
 
     # Collect all streamed chunks into a single response string
     raw_text = ""
     try:
         for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                raw_text += delta
+            if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    raw_text += delta
     except Exception as e:
-        print("[Cerebras] Error reading stream: {}".format(e))
+        print("[OpenRouter] Error reading stream: {}".format(e))
         return _empty
 
     return _parse_suggestions(raw_text)
@@ -205,8 +209,8 @@ def _parse_suggestions(raw_text):
     try:
         data = json.loads(stripped)
     except json.JSONDecodeError as e:
-        print("[Cerebras] JSON parse error: {}".format(e))
-        print("[Cerebras] Raw response was:\n{}".format(raw_text))
+        print("[OpenRouter] JSON parse error: {}".format(e))
+        print("[OpenRouter] Raw response was:\n{}".format(raw_text))
         return _empty
 
     # Validate and sanitize
@@ -217,22 +221,22 @@ def _parse_suggestions(raw_text):
     includes   = data.get("includes", [])
     defines    = data.get("defines",  [])
 
-    print("[Cerebras] Suggestions — Function='{}', {} variable(s), {} parameter(s), "
+    print("[OpenRouter] Suggestions — Function='{}', {} variable(s), {} parameter(s), "
           "{} include(s), {} define(s)".format(
               func_name, len(variables), len(parameters), len(includes), len(defines)))
     if context:
-        print("  [Cerebras] Context: {}".format(context))
+        print("  [OpenRouter] Context: {}".format(context))
 
     for v in variables:
-        print("  [Cerebras] Variable: {} -> {} ({})".format(
+        print("  [OpenRouter] Variable: {} -> {} ({})".format(
             v.get("name"), v.get("new_name"), v.get("new_type_str")))
     for p in parameters:
-        print("  [Cerebras] Parameter: {} -> {} ({})".format(
+        print("  [OpenRouter] Parameter: {} -> {} ({})".format(
             p.get("name"), p.get("new_name"), p.get("new_type_str")))
     for inc in includes:
-        print("  [Cerebras] Include: {}".format(inc))
+        print("  [OpenRouter] Include: {}".format(inc))
     for dfn in defines:
-        print("  [Cerebras] Define: {}".format(dfn))
+        print("  [OpenRouter] Define: {}".format(dfn))
 
     return {
         "function_name": func_name,
@@ -251,15 +255,15 @@ def _sanitize_list(items, label):
     """
     result = []
     if not isinstance(items, list):
-        print("[Cerebras] WARNING: '{}' is not a list, ignoring.".format(label))
+        print("[OpenRouter] WARNING: '{}' is not a list, ignoring.".format(label))
         return result
 
     for item in items:
         if not isinstance(item, dict):
-            print("[Cerebras] WARNING: dropping non-dict item in '{}': {}".format(label, item))
+            print("[OpenRouter] WARNING: dropping non-dict item in '{}': {}".format(label, item))
             continue
         if "name" not in item:
-            print("[Cerebras] WARNING: dropping item missing 'name' in '{}': {}".format(label, item))
+            print("[OpenRouter] WARNING: dropping item missing 'name' in '{}': {}".format(label, item))
             continue
         # Supply defaults for optional fields so callers don't need to guard
         item.setdefault("new_name",     item["name"])  # keep current if not provided

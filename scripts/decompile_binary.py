@@ -150,7 +150,27 @@ def run_decompiler(binary_path):
     with open(output_filename, "w") as f:
         f.write("\n".join(final_output))
 
+    # Save suggestions to JSON for the Ghidra Script to import back into the UI
+    import json
+    suggestions_filename = os.path.join(
+        OUTPUT_DIR,
+        f"{os.path.basename(binary_path)}_suggestions.json"
+    )
+    # Convert suggestions to a JSON-serializable format (strip non-serializable objects)
+    serializable_suggestions = {}
+    for name, s in stored_suggestions.items():
+        serializable_suggestions[name] = {
+            "name": s.get("name"),
+            "variables": s.get("variables", {}),
+            "parameters": s.get("parameters", []),
+            "context": s.get("context", "")
+        }
+    
+    with open(suggestions_filename, "w") as f:
+        json.dump(serializable_suggestions, f, indent=4)
+
     print(f"\nSuccessfully stored decompiled program in {output_filename}")
+    print(f"Suggestions saved to {suggestions_filename} for Ghidra UI import.")
 
     # Release consumer when done
     res.release(None)

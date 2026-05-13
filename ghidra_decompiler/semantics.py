@@ -13,7 +13,7 @@ Public API
     update_variable_names_and_types(program, func, updates)
     change_function_name(program, func, new_name)
     change_function_parameters(program, func, new_params, update_type=None)
-    apply_cerebras_suggestions(program, func, suggestions)
+    apply_openrouter_suggestions(program, func, suggestions)
 """
 
 from ghidra_decompiler.type_utils import resolve_type, is_array_type, is_pointer_type
@@ -120,6 +120,31 @@ def strip_leading_underscores(program):
                 change_function_name(program, func, name[1:])
     finally:
         program.endTransaction(txId, True)
+
+
+def _is_any_parameter_used(high_func, decompiled_c):
+    """
+    Checks if any parameter names appear in the decompiled C body.
+    """
+    if not high_func or not decompiled_c:
+        return True
+    import re
+    body_start = decompiled_c.find('{')
+    if body_start == -1:
+        return True
+    body = decompiled_c[body_start:]
+    # Strip comments
+    body = re.sub(r'/\*.*?\*/', '', body, flags=re.DOTALL)
+    body = re.sub(r'//.*', '', body)
+    
+    syms = high_func.getLocalSymbolMap().getSymbols()
+    while syms.hasNext():
+        s = syms.next()
+        if s.isParameter():
+            name = s.getName()
+            if re.search(r'\b' + re.escape(name) + r'\b', body):
+                return True
+    return False
 
 
 def update_function_semantics(program, func, name):
@@ -345,9 +370,9 @@ def _apply_variable_suggestions(program, func, func_name, suggestions):
 
     if var_updates:
         updated = update_variable_names_and_types(program, func, var_updates)
-        print("[Cerebras] Applied {} variable update(s) to '{}'".format(updated, func_name))
+        print("[OpenRouter] Applied {} variable update(s) to '{}'".format(updated, func_name))
     else:
-        print("[Cerebras] No variable suggestions to apply for '{}'".format(func_name))
+        print("[OpenRouter] No variable suggestions to apply for '{}'".format(func_name))
 
 
 def _apply_parameter_suggestions(program, func, func_name, suggestions):
@@ -356,11 +381,11 @@ def _apply_parameter_suggestions(program, func, func_name, suggestions):
 
     param_suggestions = suggestions.get("parameters", [])
     if func_name == "main":
-        print("[Cerebras] Preserving manual parameter signature for 'main'")
+        print("[OpenRouter] Preserving manual parameter signature for 'main'")
         return
 
     if not param_suggestions:
-        print("[Cerebras] No parameter suggestions for '{}'".format(func_name))
+        print("[OpenRouter] No parameter suggestions for '{}'".format(func_name))
         return
 
     current_params = list(func.getParameters())
@@ -380,7 +405,7 @@ def _apply_parameter_suggestions(program, func, func_name, suggestions):
             new_params.add(ParameterImpl(new_name, final_type, program))
             if new_name != old_name or new_type is not None:
                 changed = True
-                print("[Cerebras]   param '{}' -> name='{}' type='{}'".format(
+                print("[OpenRouter]   param '{}' -> name='{}' type='{}'".format(
                     old_name, new_name, new_type_str if new_type_str else "(unchanged)"))
         else:
             new_params.add(ParameterImpl(old_name, param.getDataType(), program))
@@ -389,15 +414,15 @@ def _apply_parameter_suggestions(program, func, func_name, suggestions):
         change_function_parameters(
             program, func, new_params, Function.FunctionUpdateType.DYNAMIC_STORAGE_ALL_PARAMS
         )
-        print("[Cerebras] Applied parameter updates to '{}'".format(func_name))
+        print("[OpenRouter] Applied parameter updates to '{}'".format(func_name))
     else:
-        print("[Cerebras] No parameter changes needed for '{}'".format(func_name))
+        print("[OpenRouter] No parameter changes needed for '{}'".format(func_name))
 
 
-def apply_cerebras_suggestions(program, func, suggestions):
+def apply_openrouter_suggestions(program, func, suggestions):
     """
     Apply variable, parameter, and function name suggestions obtained from the
-    Cerebras AI layer to the function in Ghidra.
+    OpenRouter AI layer to the function in Ghidra.
 
     Must be called AFTER update_function_semantics() so that commitParamsToDatabase
     has already populated the function's parameter list.
@@ -419,3 +444,34 @@ def apply_cerebras_suggestions(program, func, suggestions):
 
     _apply_variable_suggestions(program, func, func_name, suggestions)
     _apply_parameter_suggestions(program, func, func_name, suggestions)
+
+
+def finalize_main_signature(program, func):
+    """
+    Final pass for 'main' signature: strip non-standard unused parameters.
+    Must be called after all alignment passes.
+    """
+    from ghidra.app.decompiler import DecompInterface
+    from ghidra.util.task import ConsoleTaskMonitor
+    from java.util import ArrayList
+    from ghidra.program.model.listing import Function
+
+    param_count = func.getParameterCount()
+    if param_count in (0, 2, 3):
+        return # Standard, leave alone
+
+    decompiler = DecompInterface()
+    decompiler.openProgram(program)
+    results = decompiler.decompileFunction(func, 30, ConsoleTaskMonitor())
+    decompiler.dispose()
+
+    if results.decompileCompleted():
+        high_func = results.getHighFunction()
+        decomp_c = results.getDecompiledFunction().getC()
+        if not _is_any_parameter_used(high_func, decomp_c):
+            print("[{}] main: non-standard {}-param signature is UNUSED. Converting to 'void'".format(
+                func.getEntryPoint(), param_count))
+            # change_function_parameters already opens its own transaction
+            change_function_parameters(
+                program, func, ArrayList(), Function.FunctionUpdateType.DYNAMIC_STORAGE_ALL_PARAMS
+            )

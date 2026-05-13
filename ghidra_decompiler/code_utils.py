@@ -11,6 +11,7 @@ Public API
 """
 
 import re
+from ghidra_decompiler.syntax import recover_variadic_arguments
 
 
 def sanitize_c_code(c_code):
@@ -18,6 +19,8 @@ def sanitize_c_code(c_code):
     Performs multiple sanitization passes on the C code:
     1. Converts hexadecimal numbers (0x...) to decimal.
     2. Converts boolean literals (true, false) to integers (1, 0).
+    3. Simplifies subtraction-based comparisons (x - 1U == 0 -> x == 1).
+    4. Recovers missing variadic arguments (e.g. scanf).
 
     Skips over string literals to avoid corrupting text.
     """
@@ -29,7 +32,7 @@ def sanitize_c_code(c_code):
     parts = re.split(r'("(?:\\.|[^"\\])*")', c_code)
 
     for i in range(0, len(parts), 2):
-        # Pass 1: Convert hex (like 0x1A or 0x0) to decimal.
+        # Pass 1: Convert hex to decimal.
         parts[i] = re.sub(
             r'\b0[xX][0-9a-fA-F]+\b',
             lambda match: str(int(match.group(0), 16)),
@@ -40,7 +43,38 @@ def sanitize_c_code(c_code):
         parts[i] = re.sub(r'\btrue\b',  '1', parts[i])
         parts[i] = re.sub(r'\bfalse\b', '0', parts[i])
 
-    return "".join(parts)
+        # Pass 3: Simplify subtraction-based comparisons (e.g., x - 1U == 0 -> x == 1)
+        parts[i] = re.sub(
+            r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*-\s*(\d+)U?\s*([=!]=)\s*0\b',
+            r'\1 \3 \2',
+            parts[i]
+        )
+
+    final_c = "".join(parts)
+    
+    # Pass 4: Clean up remaining (ulong)(var - constU) artifacts
+    # This converts (ulong)(selected_option - 6U) -> (selected_option - 6)
+    final_c = re.sub(
+        r'\(ulong\)\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*-\s*(\d+)U?\s*\)',
+        r'(\1 - \2)',
+        final_c
+    )
+    
+    # Pass 5: Strip 'U' suffix from any remaining integers for readability
+    final_c = re.sub(r'\b(\d+)U\b', r'\1', final_c)
+
+    # Pass 6: Strip unused variadic arguments from printf
+    # If printf has a constant string with no % and more than 1 argument, strip the others.
+    final_c = re.sub(
+        r'(printf\s*\(\s*"([^%"]*)"\s*)\s*,[^;]*\)',
+        r'\1)',
+        final_c
+    )
+
+    # Pass 7: Recover missing variadic arguments (e.g. scanf)
+    final_c = recover_variadic_arguments(final_c)
+    
+    return final_c
 
 
 def is_generic_name(name):

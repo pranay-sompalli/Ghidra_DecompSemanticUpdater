@@ -11,13 +11,15 @@ Classes
 Public API (Wrappers)
 ---------------------
     enhance_decompilation_with_ai(program, iface, core_funcs,
-                                  skip_ai_for_funcs=None, model="llama3.1-8b")
+                                  skip_ai_for_funcs=None, model="meta-llama/llama-3.1-8b-instruct")
         -> dict[str, dict]   (stored suggestions keyed by function name)
 """
 
-from ghidra_decompiler.semantics import update_function_semantics, apply_cerebras_suggestions
+from ghidra_decompiler.semantics import (
+    update_function_semantics, apply_openrouter_suggestions, finalize_main_signature
+)
 from ghidra_decompiler.alignment import align_usage_with_called_functions
-from ghidra_decompiler.ai.cerebras import get_cerebras_suggestions
+from ghidra_decompiler.ai.openrouter import get_openrouter_suggestions
 
 
 class DecompilerPipeline:
@@ -25,7 +27,7 @@ class DecompilerPipeline:
     Stateful orchestrator for the AI-enhanced decompilation process.
     """
 
-    def __init__(self, program, iface, core_funcs, model="llama3.1-8b"):
+    def __init__(self, program, iface, core_funcs, model="meta-llama/llama-3.1-8b-instruct"):
         self.program = program
         self.iface = iface
         self.core_funcs = core_funcs
@@ -63,11 +65,11 @@ class DecompilerPipeline:
             update_function_semantics(self.program, func, name)
 
             if name not in skip_ai_for_funcs:
-                print(f"[Cerebras] Requesting suggestions for '{name}' ...")
+                print(f"[OpenRouter] Requesting suggestions for '{name}' ...")
                 dec_results = self.iface.decompileFunction(func, 30, self._get_monitor())
                 if dec_results.decompileCompleted():
                     initial_c = dec_results.getDecompiledFunction().getC()
-                    suggestions = get_cerebras_suggestions(
+                    suggestions = get_openrouter_suggestions(
                         initial_c, model=self.model, context_c=self.global_context_c
                     )
                     if suggestions:
@@ -79,7 +81,7 @@ class DecompilerPipeline:
         """
         for name, func in self.core_funcs.items():
             if name in self.stored_suggestions:
-                apply_cerebras_suggestions(self.program, func, self.stored_suggestions[name])
+                apply_openrouter_suggestions(self.program, func, self.stored_suggestions[name])
 
     def run_alignment_passes(self, num_passes=2):
         """
@@ -103,6 +105,12 @@ class DecompilerPipeline:
         self.run_semantic_and_ai_pass(skip_ai_for_funcs=skip_ai_for_funcs)
         self.apply_suggestions()
         self.run_alignment_passes()
+        
+        # Final cleanup for main signature if it was not already canonicalized
+        main_func = self.core_funcs.get("main")
+        if main_func:
+            finalize_main_signature(self.program, main_func)
+
         return self.stored_suggestions
 
 
@@ -111,7 +119,7 @@ def enhance_decompilation_with_ai(
     iface,
     core_funcs,
     skip_ai_for_funcs=None,
-    model="llama3.1-8b",
+    model="meta-llama/llama-3.1-8b-instruct",
 ):
     """
     Functional wrapper around DecompilerPipeline for backward compatibility.

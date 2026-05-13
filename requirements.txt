@@ -1,2 +1,2 @@
-cerebras-cloud-sdk
+openai
 pyghidra

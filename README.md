@@ -1,6 +1,6 @@
 # Ghidra DecompSemanticUpdater
 
-An AI-enhanced Ghidra decompilation pipeline that uses the **Cerebras Cloud API**
+An AI-enhanced Ghidra decompilation pipeline that uses the **OpenRouter API**
 to automatically assign semantically meaningful variable names, parameter names,
 C types, and high-level purpose comments to Ghidra-decompiled pseudocode.
 
@@ -20,7 +20,7 @@ ghidra_decompiler/          ← main Python package
 ├── find_main.py            ← robust main() locator (entry vs. start)
 └── ai/
     ├── __init__.py
-    └── cerebras.py         ← Cerebras Cloud SDK & Prompting
+    └── openrouter.py       ← OpenRouter SDK & Prompting
 ```
 
 ---
@@ -29,7 +29,7 @@ ghidra_decompiler/          ← main Python package
 
 - Python ≥ 3.9
 - **Ghidra** installation with **PyGhidra** configured
-- **Cerebras Cloud API key** exported as `CEREBRAS_API_KEY`
+- **OpenRouter API key** exported as `OPEN_ROUTER_API_KEY`
 
 Installation:
 
@@ -41,9 +41,9 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. Set your Cerebras API key:
+1. Set your OpenRouter API key:
    ```bash
-   export CEREBRAS_API_KEY="your-key-here"
+   export OPEN_ROUTER_API_KEY="your-key-here"
    ```
 
 2. Run the pipeline:
@@ -63,17 +63,17 @@ pip install -r requirements.txt
 | Pass | Description |
 |------|-------------|
 | **Pre-pass** | Decompiles `main` to establish a global reference context for LLM consistency. |
-| **Pass 1 & 2** | **(Iterative)** Detects return types and commits initial metadata. Queries Cerebras for suggestions. If new generic variables spawn (due to data-flow splitting), it performs a second AI pass to capture them. |
+| **Pass 1 & 2** | **(Iterative)** Detects return types and commits initial metadata. Queries OpenRouter for suggestions. If new generic variables spawn (due to data-flow splitting), it performs a second AI pass to capture them. |
 | **Comments** | AI-generated function summaries are applied as header comments directly to the Ghidra database. |
 | **Passes 3 & 4** | **Global Alignment**: Propagates naming improvements deep into the call tree (callees ↔ callers). |
 | **Final** | Re-decompiles all functions with full semantic context, sanitizes code (hex → decimal, bool → int), and writes output to `output/`. |
 
 ---
 
-## Supported Cerebras Models
+## Supported OpenRouter Models
 
 | Model ID | Notes |
 |----------|-------|
-| `llama3.1-8b` | Default — Fastest response |
-| `qwen-3-235b-a22b-instruct-2507` | Highest quality inference |
-| `gpt-oss-120b` | Large context alternative |
+| `meta-llama/llama-3.1-8b-instruct` | Default — Fast response |
+| `qwen/qwen-2.5-72b-instruct` | High quality inference |
+| `anthropic/claude-3.5-sonnet` | Large context alternative |
