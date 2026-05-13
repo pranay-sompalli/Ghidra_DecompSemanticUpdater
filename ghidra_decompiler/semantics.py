@@ -419,6 +419,67 @@ def _apply_parameter_suggestions(program, func, func_name, suggestions):
         print("[OpenRouter] No parameter changes needed for '{}'".format(func_name))
 
 
+def _apply_global_suggestions(program, func_name, suggestions):
+    from ghidra.program.model.data import DataUtilities
+    from ghidra.program.model.symbol import SourceType
+    
+    global_suggestions = suggestions.get("globals", [])
+    if not global_suggestions:
+        print("[OpenRouter] No global variable suggestions for '{}'".format(func_name))
+        return
+
+    symbol_table = program.getSymbolTable()
+    updated_count = 0
+    
+    txId = program.startTransaction("Update Globals from " + func_name)
+    try:
+        for entry in global_suggestions:
+            current_name = entry.get("name")
+            new_name     = entry.get("new_name")
+            new_type_str = entry.get("new_type_str")
+            
+            if not current_name:
+                continue
+
+            symbols = symbol_table.getSymbols(current_name)
+            for sym in symbols:
+                if sym.isGlobal():
+                    # Update type
+                    new_type = resolve_type(new_type_str, program) if new_type_str else None
+                    if new_type:
+                        addr = sym.getAddress()
+                        data = program.getListing().getDataAt(addr)
+                        if data:
+                            try:
+                                DataUtilities.createData(
+                                    program, addr, new_type, 0, False,
+                                    DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA
+                                )
+                                updated_count += 1
+                                print("[OpenRouter]   global '{}' -> type='{}'".format(current_name, new_type_str))
+                            except Exception as e:
+                                print("[OpenRouter]   [error] failed to retype global '{}': {}".format(current_name, e))
+
+                    # Update name
+                    if new_name and new_name != current_name:
+                        try:
+                            sym.setName(new_name, SourceType.USER_DEFINED)
+                            print("[OpenRouter]   global '{}' -> name='{}'".format(current_name, new_name))
+                            updated_count += 1
+                        except Exception as e:
+                            print("[OpenRouter]   [error] failed to rename global '{}': {}".format(current_name, e))
+                            
+    except Exception as e:
+        import traceback
+        print("Error in _apply_global_suggestions for {}: {}".format(func_name, str(e)))
+        traceback.print_exc()
+    finally:
+        program.endTransaction(txId, True)
+        
+    if updated_count > 0:
+        print("[OpenRouter] Applied {} global update(s) to '{}'".format(updated_count, func_name))
+
+
 def apply_openrouter_suggestions(program, func, suggestions):
     """
     Apply variable, parameter, and function name suggestions obtained from the
@@ -444,6 +505,7 @@ def apply_openrouter_suggestions(program, func, suggestions):
 
     _apply_variable_suggestions(program, func, func_name, suggestions)
     _apply_parameter_suggestions(program, func, func_name, suggestions)
+    _apply_global_suggestions(program, func_name, suggestions)
 
 
 def finalize_main_signature(program, func):

@@ -50,6 +50,11 @@ def _parse_args():
         "binary",
         help="Name of the binary file inside the project's binaries/ directory",
     )
+    parser.add_argument(
+        "--model",
+        default="openrouter/free",
+        help="The OpenRouter model ID to use (default: openrouter/free)",
+    )
     return parser.parse_args()
 
 
@@ -57,7 +62,7 @@ def _parse_args():
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run_decompiler(binary_path):
+def run_decompiler(binary_path, model="openrouter/free"):
     # Start PyGhidra fully in headless mode first
     pyghidra.start()
 
@@ -105,7 +110,7 @@ def run_decompiler(binary_path):
     core_funcs = getCoreFunctions(coreFunctions, program)
 
     # ── AI-enhanced decompilation pipeline ──────────────────────────────────
-    pipeline = DecompilerPipeline(program, iface, core_funcs)
+    pipeline = DecompilerPipeline(program, iface, core_funcs, model=model)
     stored_suggestions = pipeline.execute_full_pipeline()
 
     # ── Final pass: collect headers/defines then re-decompile ────────────────
@@ -115,21 +120,66 @@ def run_decompiler(binary_path):
         all_includes.update(suggestions.get("includes", []))
         all_defines.update(suggestions.get("defines", []))
 
-    final_output = []
+    headers = []
+    
+    # 1. Standard C Headers
+    standard_includes = [
+        "#include <stdio.h>",
+        "#include <stdlib.h>",
+        "#include <stdbool.h>",
+        "#include <string.h>"
+    ]
+    for inc in standard_includes:
+        all_includes.add(inc)
 
     for inc in sorted(all_includes):
         if not inc.strip().startswith("#include"):
-            final_output.append(f"#include {inc.strip()}")
+            headers.append(f"#include {inc.strip()}")
         else:
-            final_output.append(inc.strip())
+            headers.append(inc.strip())
+            
+    headers.append("")
 
+    # Build the C bodies first to know what types and aliases are used
+    bodies = []
+    
+    # Custom Defines from AI
     for dfn in sorted(all_defines):
-        final_output.append(dfn.strip())
+        bodies.append(dfn.strip())
 
-    if final_output:
-        final_output.append("")
+    if all_defines:
+        bodies.append("")
+        
+    # Extract and emit Global Variables
+    from ghidra.program.model.symbol import SymbolType
+    globals_c = []
+    emitted_globals = set()
+    for sym in program.getSymbolTable().getSymbolIterator():
+        if sym.isGlobal() and sym.getSymbolType() == SymbolType.LABEL:
+            sym_name = sym.getName()
+            if sym_name in emitted_globals:
+                continue
+            address = sym.getAddress()
+            block = program.getMemory().getBlock(address)
+            if block and not block.isExecute() and (block.getName() in [".data", ".bss", "__data", "__bss", "__common"]):
+                data = program.getListing().getDataAt(address)
+                if data:
+                    dt = data.getDataType()
+                    globals_c.append(f"{dt.getName()} {sym_name};")
+                    emitted_globals.add(sym_name)
+    
+    if globals_c:
+        bodies.append("/* Global Variables */")
+        bodies.extend(globals_c)
+        bodies.append("")
 
-    # Callees before callers (bottom-up ordering via reversed insertion order)
+    # Function Prototypes
+    bodies.append("/* Function Prototypes */")
+    for name, func in core_funcs.items():
+        bodies.append(f"{func.getSignature().getPrototypeString(True)};")
+    bodies.append("")
+
+    # Function Bodies
     for name, func in reversed(list(core_funcs.items())):
         print(f"\n/* --- Function: {func.getName()} --- */")
         dec_results = iface.decompileFunction(func, 30, ConsoleTaskMonitor())
@@ -137,8 +187,51 @@ def run_decompiler(binary_path):
             final_c = dec_results.getDecompiledFunction().getC()
             final_c = sanitize_c_code(final_c)
             print(final_c)
-            final_output.append(f"/* --- Function: {func.getName()} --- */\n")
-            final_output.append(final_c)
+            bodies.append(f"/* --- Function: {func.getName()} --- */\n")
+            bodies.append(final_c)
+            
+    # Now compute dynamic typedefs and aliases
+    import re
+    full_c_text = " ".join(bodies)
+    used_words = set(re.findall(r'\b[a-zA-Z_]\w*\b', full_c_text))
+
+    # Dynamic Ghidra Typedefs mapping
+    ghidra_type_map = {
+        "undefined": "unsigned char",
+        "byte": "unsigned char",
+        "undefined2": "unsigned short",
+        "ushort": "unsigned short",
+        "undefined4": "unsigned int",
+        "uint": "unsigned int",
+        "undefined8": "unsigned long long",
+        "ulong": "unsigned long"
+    }
+    
+    dynamic_typedefs = []
+    for gtype, ctype in ghidra_type_map.items():
+        if gtype in used_words:
+            dynamic_typedefs.append(f"typedef {ctype} {gtype};")
+            
+    if dynamic_typedefs:
+        headers.append("/* Dynamic Ghidra Types */")
+        headers.extend(dynamic_typedefs)
+        headers.append("")
+
+    # Dynamic Libc Aliases
+    dynamic_aliases = []
+    for sym in program.getSymbolTable().getExternalSymbols():
+        name = sym.getName()
+        if name in used_words and name.startswith("_"):
+            dynamic_aliases.append(f"#define {name} {name[1:]}")
+            
+    if dynamic_aliases:
+        headers.append("/* Dynamic Libc Aliases */")
+        headers.extend(dynamic_aliases)
+        headers.append("")
+        
+    final_output = headers + bodies
+
+
 
     # Write output
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -184,4 +277,4 @@ if __name__ == "__main__":
         print(f"Error: binary '{args.binary}' not found in {BINARIES_DIR}/")
         sys.exit(1)
 
-    run_decompiler(binary_path)
+    run_decompiler(binary_path, model=args.model)

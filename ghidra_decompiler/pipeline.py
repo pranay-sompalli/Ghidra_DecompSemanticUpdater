@@ -11,7 +11,7 @@ Classes
 Public API (Wrappers)
 ---------------------
     enhance_decompilation_with_ai(program, iface, core_funcs,
-                                  skip_ai_for_funcs=None, model="meta-llama/llama-3.1-8b-instruct")
+                                  skip_ai_for_funcs=None, model="openrouter/free")
         -> dict[str, dict]   (stored suggestions keyed by function name)
 """
 
@@ -27,7 +27,7 @@ class DecompilerPipeline:
     Stateful orchestrator for the AI-enhanced decompilation process.
     """
 
-    def __init__(self, program, iface, core_funcs, model="meta-llama/llama-3.1-8b-instruct"):
+    def __init__(self, program, iface, core_funcs, model="openrouter/free"):
         self.program = program
         self.iface = iface
         self.core_funcs = core_funcs
@@ -119,7 +119,7 @@ def enhance_decompilation_with_ai(
     iface,
     core_funcs,
     skip_ai_for_funcs=None,
-    model="meta-llama/llama-3.1-8b-instruct",
+    model="openrouter/free",
 ):
     """
     Functional wrapper around DecompilerPipeline for backward compatibility.

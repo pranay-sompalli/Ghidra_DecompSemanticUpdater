@@ -7,9 +7,8 @@ decompiled C function.
 
 Supported models
 ----------------
-    meta-llama/llama-3.1-8b-instruct (default — fast)
-    qwen/qwen-2.5-72b-instruct
-    anthropic/claude-3.5-sonnet
+    openrouter/free (default — auto routes to a fast free model)
+    qwen/qwen3-coder:free
 
 Environment variable required
 ------------------------------
@@ -17,7 +16,7 @@ Environment variable required
 
 Public API
 ----------
-    get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-instruct", context_c=None) -> dict
+    get_openrouter_suggestions(decompiled_c, model="openrouter/free", context_c=None) -> dict
 
     Returns:
         {
@@ -41,6 +40,7 @@ Public API
 import os
 import json
 import re
+import time
 
 # ---------------------------------------------------------------------------
 # Prompt templates
@@ -55,6 +55,7 @@ every local variable and every function parameter visible in the code.
 Rules:
 - Only suggest names/types for identifiers that APPEAR in the provided code.
 - Do NOT invent variables that are not present.
+- Identify Global Variables (variables not declared inside the function body or its parameters, often prefixed with `_` or `DAT_`) and suggest their types based on how the function interacts with them (e.g., if passed to `%f` in scanf, it's a `float`).
 - Analyze what the function does and suggest a descriptive function name (e.g., 'verify_password' instead of 'check').
 - Use standard C type strings: "int", "unsigned int", "long", "char",
   "char *", "char **", "void *", "void", "float", "double",
@@ -74,6 +75,9 @@ JSON schema (strict):
     {"name": "<current_name>", "new_name": "<suggested_name>", "new_type_str": "<c_type>"}
   ],
   "parameters": [
+    {"name": "<current_name>", "new_name": "<suggested_name>", "new_type_str": "<c_type>"}
+  ],
+  "globals": [
     {"name": "<current_name>", "new_name": "<suggested_name>", "new_type_str": "<c_type>"}
   ],
   "includes": [
@@ -103,7 +107,7 @@ Keep parameter and variable names consistent with any reference context provided
 # Main public function
 # ---------------------------------------------------------------------------
 
-def get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-instruct", context_c=None):
+def get_openrouter_suggestions(decompiled_c, model="openrouter/free", context_c=None):
     """
     Send decompiled_c to the OpenRouter API and return name/type suggestions.
 
@@ -112,7 +116,7 @@ def get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-inst
     decompiled_c : str
         Raw decompiled C code string from Ghidra's DecompInterface.
     model : str
-        The OpenRouter model ID to use.  Default is "meta-llama/llama-3.1-8b-instruct".
+        The OpenRouter model ID to use.  Default is "openrouter/free".
     context_c : str, optional
         Additional C code (e.g., main function) to provide as reference
         for naming and structural consistency.
@@ -120,12 +124,12 @@ def get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-inst
     Returns
     -------
     dict
-        Keys: "function_name", "variables", "parameters", "includes", "defines".
-        "variables" and "parameters" are lists of dicts:
+        Keys: "function_name", "variables", "parameters", "globals", "includes", "defines".
+        "variables", "parameters", and "globals" are lists of dicts:
             {"name": str, "new_name": str, "new_type_str": str}
         "includes" and "defines" are lists of strings.
     """
-    _empty = {"function_name": None, "variables": [], "parameters": [], "includes": [], "defines": []}
+    _empty = {"function_name": None, "variables": [], "parameters": [], "globals": [], "includes": [], "defines": []}
 
     api_key = os.environ.get("OPEN_ROUTER_API_KEY")
     if not api_key:
@@ -137,7 +141,7 @@ def get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-inst
         return _empty
 
     try:
-        from openai import OpenAI
+        from openai import OpenAI, RateLimitError
     except ImportError:
         print("[OpenRouter] ERROR: openai not installed. "
               "Run: pip install openai")
@@ -146,6 +150,7 @@ def get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-inst
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
+        max_retries=0,
     )
 
     context_header = ""
@@ -157,20 +162,32 @@ def get_openrouter_suggestions(decompiled_c, model="meta-llama/llama-3.1-8b-inst
         decompiled_c=decompiled_c.strip(),
     )
 
-    try:
-        stream = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt},
-            ],
-            stream=True,
-            max_tokens=2048,
-            temperature=0.2,
-        )
-    except Exception as e:
-        print("[OpenRouter] API call failed: {}".format(e))
-        return _empty
+    max_attempts = 3
+    stream = None
+    for attempt in range(max_attempts):
+        try:
+            stream = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                stream=True,
+                max_tokens=2048,
+                temperature=0.2,
+            )
+            break  # Success
+        except RateLimitError as e:
+            if attempt < max_attempts - 1:
+                wait_time = 32 # Free models often enforce 30s limits
+                print(f"[OpenRouter] Rate limited. Waiting {wait_time}s before retry... (Attempt {attempt+1}/{max_attempts})")
+                time.sleep(wait_time)
+            else:
+                print(f"[OpenRouter] API call failed after retries: {e}")
+                return _empty
+        except Exception as e:
+            print("[OpenRouter] API call failed: {}".format(e))
+            return _empty
 
     # Collect all streamed chunks into a single response string
     raw_text = ""
@@ -196,7 +213,7 @@ def _parse_suggestions(raw_text):
     Extract and validate the JSON suggestions from the LLM response text.
     Handles cases where the model wraps JSON in markdown code fences.
     """
-    _empty = {"function_name": None, "variables": [], "parameters": [], "includes": [], "defines": []}
+    _empty = {"function_name": None, "variables": [], "parameters": [], "globals": [], "includes": [], "defines": []}
 
     if not raw_text:
         return _empty
@@ -218,12 +235,13 @@ def _parse_suggestions(raw_text):
     context    = data.get("context",       None)
     variables  = _sanitize_list(data.get("variables",  []), "variables")
     parameters = _sanitize_list(data.get("parameters", []), "parameters")
+    globals_list = _sanitize_list(data.get("globals", []), "globals")
     includes   = data.get("includes", [])
     defines    = data.get("defines",  [])
 
-    print("[OpenRouter] Suggestions — Function='{}', {} variable(s), {} parameter(s), "
-          "{} include(s), {} define(s)".format(
-              func_name, len(variables), len(parameters), len(includes), len(defines)))
+    print("[OpenRouter] Suggestions — Function='{}', {} var(s), {} param(s), {} global(s), "
+          "{} inc(s), {} def(s)".format(
+              func_name, len(variables), len(parameters), len(globals_list), len(includes), len(defines)))
     if context:
         print("  [OpenRouter] Context: {}".format(context))
 
@@ -233,6 +251,9 @@ def _parse_suggestions(raw_text):
     for p in parameters:
         print("  [OpenRouter] Parameter: {} -> {} ({})".format(
             p.get("name"), p.get("new_name"), p.get("new_type_str")))
+    for g in globals_list:
+        print("  [OpenRouter] Global: {} -> {} ({})".format(
+            g.get("name"), g.get("new_name"), g.get("new_type_str")))
     for inc in includes:
         print("  [OpenRouter] Include: {}".format(inc))
     for dfn in defines:
@@ -243,6 +264,7 @@ def _parse_suggestions(raw_text):
         "context":       context,
         "variables":     variables,
         "parameters":    parameters,
+        "globals":       globals_list,
         "includes":      includes,
         "defines":       defines,
     }

@@ -48,12 +48,13 @@ pip install -r requirements.txt
 
 2. Run the pipeline:
    ```bash
-   python scripts/decompile_binary.py <binary_name>
+   python scripts/decompile_binary.py <binary_name> [--model <model_id>]
    ```
 
    **Example:**
    ```bash
    python scripts/decompile_binary.py crackme0x06
+   python scripts/decompile_binary.py banking_normal --model qwen/qwen3-coder:free
    ```
 
 ---
@@ -74,6 +75,7 @@ pip install -r requirements.txt
 
 | Model ID | Notes |
 |----------|-------|
-| `meta-llama/llama-3.1-8b-instruct` | Default — Fast response |
-| `qwen/qwen-2.5-72b-instruct` | High quality inference |
-| `anthropic/claude-3.5-sonnet` | Large context alternative |
+| `qwen/qwen3-coder:free` | Default — Fast & Free coder model |
+| `meta-llama/llama-3.3-70b-instruct:free` | High quality inference |
+| `openai/gpt-oss-120b:free` | Large context alternative |
+| `openrouter/free` | Auto-routing to a free model |
