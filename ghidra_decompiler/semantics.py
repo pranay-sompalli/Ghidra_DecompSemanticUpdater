@@ -443,31 +443,43 @@ def _apply_global_suggestions(program, func_name, suggestions):
 
             symbols = symbol_table.getSymbols(current_name)
             for sym in symbols:
-                if sym.isGlobal():
-                    # Update type
-                    new_type = resolve_type(new_type_str, program) if new_type_str else None
-                    if new_type:
-                        addr = sym.getAddress()
-                        data = program.getListing().getDataAt(addr)
-                        if data:
-                            try:
-                                DataUtilities.createData(
-                                    program, addr, new_type, 0, False,
-                                    DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA
-                                )
-                                updated_count += 1
-                                print("[OpenRouter]   global '{}' -> type='{}'".format(current_name, new_type_str))
-                            except Exception as e:
-                                print("[OpenRouter]   [error] failed to retype global '{}': {}".format(current_name, e))
+                if not sym.isGlobal():
+                    continue
+                # Skip external symbols (libc stubs like _getchar, printf, etc.)
+                # Renaming these breaks the dynamic alias generator downstream.
+                if sym.isExternal():
+                    print("[OpenRouter]   [skip] '{}' is an external symbol — skipping rename/retype".format(current_name))
+                    continue
+                # Skip symbols that are functions, not data
+                from ghidra.program.model.symbol import SymbolType
+                if sym.getSymbolType() == SymbolType.FUNCTION:
+                    print("[OpenRouter]   [skip] '{}' is a function symbol — skipping rename/retype".format(current_name))
+                    continue
 
-                    # Update name
-                    if new_name and new_name != current_name:
+                # Update type (only for data globals in .data/.bss)
+                new_type = resolve_type(new_type_str, program) if new_type_str else None
+                if new_type:
+                    addr = sym.getAddress()
+                    data = program.getListing().getDataAt(addr)
+                    if data:
                         try:
-                            sym.setName(new_name, SourceType.USER_DEFINED)
-                            print("[OpenRouter]   global '{}' -> name='{}'".format(current_name, new_name))
+                            DataUtilities.createData(
+                                program, addr, new_type, 0, False,
+                                DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA
+                            )
                             updated_count += 1
+                            print("[OpenRouter]   global '{}' -> type='{}'".format(current_name, new_type_str))
                         except Exception as e:
-                            print("[OpenRouter]   [error] failed to rename global '{}': {}".format(current_name, e))
+                            print("[OpenRouter]   [error] failed to retype global '{}': {}".format(current_name, e))
+
+                # Update name
+                if new_name and new_name != current_name:
+                    try:
+                        sym.setName(new_name, SourceType.USER_DEFINED)
+                        print("[OpenRouter]   global '{}' -> name='{}'".format(current_name, new_name))
+                        updated_count += 1
+                    except Exception as e:
+                        print("[OpenRouter]   [error] failed to rename global '{}': {}".format(current_name, e))
                             
     except Exception as e:
         import traceback

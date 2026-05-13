@@ -65,6 +65,7 @@ Rules:
   (omit from the list or repeat the same name).
 - Suggest any necessary standard C headers (as #include directives, e.g. "<stdio.h>") and any necessary #define macros or constants that the code might rely on to successfully compile.
 - Provide a "context" field which is a concise (1-2 sentence) technical summary of what the function does and its primary goal.
+- If you see generic register variables like 'iVar1' or 'uVar2' being reused for multiple unrelated function returns, ALWAYS rename them to a generic name like 'temp', 'ret_val', or 'status' instead of leaving them as is.
 - Return ONLY a single valid JSON object — no markdown, no prose.
 
 JSON schema (strict):
@@ -92,6 +93,8 @@ JSON schema (strict):
 
 _USER_PROMPT_TEMPLATE = """\
 {context_header}\
+{callers_header}\
+{callees_header}\
 Analyze the following decompiled C function and suggest better variable and \
 parameter names/types. Return ONLY the JSON object described in the system prompt.
 
@@ -107,7 +110,13 @@ Keep parameter and variable names consistent with any reference context provided
 # Main public function
 # ---------------------------------------------------------------------------
 
-def get_openrouter_suggestions(decompiled_c, model="openrouter/free", context_c=None):
+def get_openrouter_suggestions(
+    decompiled_c,
+    model="openrouter/free",
+    context_c=None,
+    caller_snippets=None,
+    callee_snippets=None,
+):
     """
     Send decompiled_c to the OpenRouter API and return name/type suggestions.
 
@@ -120,6 +129,10 @@ def get_openrouter_suggestions(decompiled_c, model="openrouter/free", context_c=
     context_c : str, optional
         Additional C code (e.g., main function) to provide as reference
         for naming and structural consistency.
+    caller_snippets : list[tuple[str, str]], optional
+        List of (function_name, decompiled_c) for functions that call this one.
+    callee_snippets : list[tuple[str, str]], optional
+        List of (function_name, decompiled_c) for functions called by this one.
 
     Returns
     -------
@@ -157,8 +170,28 @@ def get_openrouter_suggestions(decompiled_c, model="openrouter/free", context_c=
     if context_c:
         context_header = "REFERENCE CONTEXT (e.g., main function):\n```c\n{}\n```\n\n".format(context_c)
 
+    callers_header = ""
+    if caller_snippets:
+        parts = []
+        for fname, fcode in caller_snippets[:3]:  # cap at 3 to stay within token budget
+            parts.append("/* caller: {} */\n{}".format(fname, fcode.strip()[:800]))
+        callers_header = "CALLER FUNCTIONS (functions that call the target):\n```c\n{}\n```\n\n".format(
+            "\n\n".join(parts)
+        )
+
+    callees_header = ""
+    if callee_snippets:
+        parts = []
+        for fname, fcode in callee_snippets[:3]:  # cap at 3 to stay within token budget
+            parts.append("/* callee: {} */\n{}".format(fname, fcode.strip()[:800]))
+        callees_header = "CALLEE FUNCTIONS (functions called by the target):\n```c\n{}\n```\n\n".format(
+            "\n\n".join(parts)
+        )
+
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         context_header=context_header,
+        callers_header=callers_header,
+        callees_header=callees_header,
         decompiled_c=decompiled_c.strip(),
     )
 

@@ -73,7 +73,78 @@ def sanitize_c_code(c_code):
 
     # Pass 7: Recover missing variadic arguments (e.g. scanf)
     final_c = recover_variadic_arguments(final_c)
-    
+
+    # Pass 8: Replace any remaining Ghidra-generated temporary variable names
+    # (iVar1, uVar3, sVar2, bVar1, etc.) that the LLM failed to rename.
+    # We assign each unique residual name a stable sequential _tmp_N alias.
+    ghidra_tmp_pattern = re.compile(r'\b([iusbcf]Var\d+)\b')
+    residuals = list(dict.fromkeys(ghidra_tmp_pattern.findall(final_c)))  # preserve order
+    for idx, residual in enumerate(residuals, start=1):
+        final_c = re.sub(r'\b' + re.escape(residual) + r'\b', f'_tmp_{idx}', final_c)
+
+    # Pass 9: Inline printf return captures that flow directly into a return.
+    # `var = printf(...); return var;`  →  `return printf(...);`
+    final_c = re.sub(
+        r'\b(\w+)\s*=\s*(printf\s*\([^;]*\))\s*;\s*\n(\s*)return\s+\1\s*;',
+        lambda m: m.group(3) + 'return ' + m.group(2) + ';',
+        final_c,
+    )
+
+    # Pass 10: Strip standalone `var = printf(...);` where the result is never
+    # tested in a conditional (if/while/for).  Those captures are pure noise.
+    _printf_assign_re = re.compile(r'\b(\w+)\s*=\s*(printf\s*\([^;]*\))\s*;')
+    _cond_vars = set(re.findall(
+        r'(?:if|while|for)\s*\([^)]*\b(\w+)\b[^)]*\)', final_c
+    ))
+    def _strip_printf_capture(m):
+        return m.group(2) + ';' if m.group(1) not in _cond_vars else m.group(0)
+    final_c = _printf_assign_re.sub(_strip_printf_capture, final_c)
+
+    # Pass 10b: After stripping printf captures, any `return VAR;` where VAR has
+    # no remaining assignment in the function body becomes `return 0;`.
+    def _fix_unassigned_return(code):
+        lines = code.split('\n')
+        # Find all vars that appear on the left-hand side of an assignment
+        assigned_vars = set(re.findall(r'\b(\w+)\s*=\s*[^=]', code))
+        def _replace_return(m):
+            varname = m.group(1)
+            if varname not in assigned_vars:
+                return m.group(0).replace(varname, '0')
+            return m.group(0)
+        return re.sub(r'\breturn\s+(\w+)\s*;', _replace_return, code)
+    final_c = _fix_unassigned_return(final_c)
+
+    # Pass 11: Remove orphaned and duplicate variable declarations.
+    # A declaration `TYPE VAR;` is removed when:
+    #   (a) the same variable is declared again later (duplicate), OR
+    #   (b) the variable never appears on any other line (unused).
+    _decl_re = re.compile(
+        r'^\s*((?:unsigned\s+|signed\s+)?'
+        r'(?:int|float|double|char|long|short|bool|uint|ulong|void\s*\*))\s+(\w+)\s*;'
+    )
+    lines = final_c.split('\n')
+    declared = {}  # varname → [line_indices]
+    for i, line in enumerate(lines):
+        m = _decl_re.match(line)
+        if m:
+            declared.setdefault(m.group(2), []).append(i)
+
+    remove_indices = set()
+    for vn, idxs in declared.items():
+        # (a) Duplicates — keep only first occurrence
+        for idx in idxs[1:]:
+            remove_indices.add(idx)
+        # (b) Unused — var never referenced outside its own declaration line(s)
+        used = any(
+            re.search(r'\b' + re.escape(vn) + r'\b', line)
+            for i, line in enumerate(lines) if i not in idxs
+        )
+        if not used:
+            for idx in idxs:
+                remove_indices.add(idx)
+
+    final_c = '\n'.join(line for i, line in enumerate(lines) if i not in remove_indices)
+
     return final_c
 
 

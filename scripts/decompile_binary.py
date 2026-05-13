@@ -132,20 +132,36 @@ def run_decompiler(binary_path, model="openrouter/free"):
     for inc in standard_includes:
         all_includes.add(inc)
 
+    # Deduplicate includes — normalize bare '<header.h>' to '#include <header.h>' first
+    seen_incs = set()
     for inc in sorted(all_includes):
-        if not inc.strip().startswith("#include"):
-            headers.append(f"#include {inc.strip()}")
-        else:
-            headers.append(inc.strip())
-            
+        inc = inc.strip()
+        if not inc.startswith("#include"):
+            inc = "#include " + inc
+        key = inc.lower()
+        if key in seen_incs:
+            continue
+        seen_incs.add(key)
+        headers.append(inc)
+
     headers.append("")
 
     # Build the C bodies first to know what types and aliases are used
     bodies = []
     
-    # Custom Defines from AI
+    # Custom Defines from AI (normalize and validate)
+    import re as _re
     for dfn in sorted(all_defines):
-        bodies.append(dfn.strip())
+        dfn = dfn.strip()
+        if not dfn.startswith("#define"):
+            dfn = "#define " + dfn
+        # Reject bare '#define SYMBOL' with no value — these are LLM hallucinations
+        # that would silently erase every occurrence of that symbol in the code.
+        parts = dfn.split()
+        if len(parts) < 3:
+            print("[Sanitize] Dropping malformed define (no value): {}".format(dfn))
+            continue
+        bodies.append(dfn)
 
     if all_defines:
         bodies.append("")
@@ -154,10 +170,21 @@ def run_decompiler(binary_path, model="openrouter/free"):
     from ghidra.program.model.symbol import SymbolType
     globals_c = []
     emitted_globals = set()
+    # ELF/linker noise symbols to always exclude from the C output
+    _LINKER_NOISE = {
+        "data_start", "__data_start", "__dso_handle", "__bss_start",
+        "_edata", "_end", "__libc_csu_init", "__libc_csu_fini",
+        "_init", "_fini", "_start",
+    }
     for sym in program.getSymbolTable().getSymbolIterator():
         if sym.isGlobal() and sym.getSymbolType() == SymbolType.LABEL:
             sym_name = sym.getName()
+            # Skip: already emitted, linker noise, names with dots, or leading __
             if sym_name in emitted_globals:
+                continue
+            if sym_name in _LINKER_NOISE:
+                continue
+            if '.' in sym_name or sym_name.startswith('__'):
                 continue
             address = sym.getAddress()
             block = program.getMemory().getBlock(address)

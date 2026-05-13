@@ -69,8 +69,33 @@ class DecompilerPipeline:
                 dec_results = self.iface.decompileFunction(func, 30, self._get_monitor())
                 if dec_results.decompileCompleted():
                     initial_c = dec_results.getDecompiledFunction().getC()
+
+                    # Collect caller snippets (internal functions only, not libc stubs)
+                    caller_snippets = []
+                    for caller in func.getCallingFunctions(self._get_monitor()):
+                        if caller.getName() in self.core_funcs:
+                            r = self.iface.decompileFunction(caller, 30, self._get_monitor())
+                            if r.decompileCompleted():
+                                caller_snippets.append(
+                                    (caller.getName(), r.getDecompiledFunction().getC())
+                                )
+
+                    # Collect callee snippets (internal functions only, not libc stubs)
+                    callee_snippets = []
+                    for callee in func.getCalledFunctions(self._get_monitor()):
+                        if callee.getName() in self.core_funcs:
+                            r = self.iface.decompileFunction(callee, 30, self._get_monitor())
+                            if r.decompileCompleted():
+                                callee_snippets.append(
+                                    (callee.getName(), r.getDecompiledFunction().getC())
+                                )
+
                     suggestions = get_openrouter_suggestions(
-                        initial_c, model=self.model, context_c=self.global_context_c
+                        initial_c,
+                        model=self.model,
+                        context_c=self.global_context_c,
+                        caller_snippets=caller_snippets or None,
+                        callee_snippets=callee_snippets or None,
                     )
                     if suggestions:
                         self.stored_suggestions[name] = suggestions
