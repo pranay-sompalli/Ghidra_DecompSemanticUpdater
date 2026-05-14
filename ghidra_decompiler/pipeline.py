@@ -55,50 +55,83 @@ class DecompilerPipeline:
 
     def run_semantic_and_ai_pass(self, skip_ai_for_funcs=None):
         """
-        Pass 1: Setup basic semantics and gather LLM suggestions.
+        Pass 1: Setup basic semantics, extract referenced string literals, and dispatch
+        parallelized LLM requests to gather rich semantic suggestions.
         """
+        import re
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         if skip_ai_for_funcs is None:
             skip_ai_for_funcs = []
 
+        # Step A: Sequentially collect ASTs, context snippets, and string literals
+        # to guarantee strict thread-safety against Ghidra's DecompInterface service.
+        tasks_payloads = []
         for name, func in self.core_funcs.items():
-            # Update semantics (return type, param commit) via Ghidra analysis
+            # Update semantics (return type, param commit) via native Ghidra analysis
             update_function_semantics(self.program, func, name)
 
             if name not in skip_ai_for_funcs:
-                print(f"[OpenRouter] Requesting suggestions for '{name}' ...")
                 dec_results = self.iface.decompileFunction(func, 30, self._get_monitor())
                 if dec_results.decompileCompleted():
                     initial_c = dec_results.getDecompiledFunction().getC()
 
-                    # Collect caller snippets (internal functions only, not libc stubs)
+                    # Extract string literals mapped inside double quotes as primary contextual references
+                    literals = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', initial_c)
+                    
+                    # Collect caller snippets
                     caller_snippets = []
                     for caller in func.getCallingFunctions(self._get_monitor()):
                         if caller.getName() in self.core_funcs:
                             r = self.iface.decompileFunction(caller, 30, self._get_monitor())
                             if r.decompileCompleted():
-                                caller_snippets.append(
-                                    (caller.getName(), r.getDecompiledFunction().getC())
-                                )
+                                caller_snippets.append((caller.getName(), r.getDecompiledFunction().getC()))
 
-                    # Collect callee snippets (internal functions only, not libc stubs)
+                    # Collect callee snippets
                     callee_snippets = []
                     for callee in func.getCalledFunctions(self._get_monitor()):
                         if callee.getName() in self.core_funcs:
                             r = self.iface.decompileFunction(callee, 30, self._get_monitor())
                             if r.decompileCompleted():
-                                callee_snippets.append(
-                                    (callee.getName(), r.getDecompiledFunction().getC())
-                                )
+                                callee_snippets.append((callee.getName(), r.getDecompiledFunction().getC()))
 
-                    suggestions = get_openrouter_suggestions(
-                        initial_c,
+                    tasks_payloads.append({
+                        "name": name,
+                        "decompiled_c": initial_c,
+                        "context_c": self.global_context_c,
+                        "caller_snippets": caller_snippets or None,
+                        "callee_snippets": callee_snippets or None,
+                        "string_literals": literals or None
+                    })
+
+        # Step B: Execute OpenRouter queries asynchronously across fully parallelized threads
+        if tasks_payloads:
+            print(f"\n[Pipeline] Dispatching {len(tasks_payloads)} asynchronous LLM requests in parallel...")
+            max_workers = min(4, len(tasks_payloads)) # Safely bounded concurrency pool
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Map futures to their function identifiers
+                future_to_name = {
+                    executor.submit(
+                        get_openrouter_suggestions,
+                        p["decompiled_c"],
                         model=self.model,
-                        context_c=self.global_context_c,
-                        caller_snippets=caller_snippets or None,
-                        callee_snippets=callee_snippets or None,
-                    )
-                    if suggestions:
-                        self.stored_suggestions[name] = suggestions
+                        context_c=p["context_c"],
+                        caller_snippets=p["caller_snippets"],
+                        callee_snippets=p["callee_snippets"],
+                        string_literals=p["string_literals"]
+                    ): p["name"] for p in tasks_payloads
+                }
+
+                for future in as_completed(future_to_name):
+                    func_name = future_to_name[future]
+                    try:
+                        suggestions = future.result()
+                        if suggestions and suggestions.get("function_name"):
+                            self.stored_suggestions[func_name] = suggestions
+                            print(f"[OpenRouter] Successfully mapped suggestions for '{func_name}'.")
+                    except Exception as e:
+                        print(f"[OpenRouter] Future execution exception for '{func_name}': {e}")
 
     def apply_suggestions(self):
         """

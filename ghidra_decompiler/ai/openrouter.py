@@ -95,8 +95,10 @@ _USER_PROMPT_TEMPLATE = """\
 {context_header}\
 {callers_header}\
 {callees_header}\
+{strings_header}\
 Analyze the following decompiled C function and suggest better variable and \
 parameter names/types. Return ONLY the JSON object described in the system prompt.
+
 
 Keep parameter and variable names consistent with any reference context provided above.
 
@@ -116,6 +118,7 @@ def get_openrouter_suggestions(
     context_c=None,
     caller_snippets=None,
     callee_snippets=None,
+    string_literals=None,
 ):
     """
     Send decompiled_c to the OpenRouter API and return name/type suggestions.
@@ -133,6 +136,8 @@ def get_openrouter_suggestions(
         List of (function_name, decompiled_c) for functions that call this one.
     callee_snippets : list[tuple[str, str]], optional
         List of (function_name, decompiled_c) for functions called by this one.
+    string_literals : list[str], optional
+        List of string literal constants referenced inside the function body.
 
     Returns
     -------
@@ -144,13 +149,28 @@ def get_openrouter_suggestions(
     """
     _empty = {"function_name": None, "variables": [], "parameters": [], "globals": [], "includes": [], "defines": []}
 
+    if not decompiled_c or not decompiled_c.strip():
+        print("[OpenRouter] WARNING: empty decompiled_c, skipping.")
+        return _empty
+
+    # ── Persistent Cross-Binary MD5 File Cache Check ──
+    import hashlib
+    cache_dir = os.path.expanduser("~/.ghidra_ai_cache")
+    code_hash = hashlib.md5(decompiled_c.strip().encode("utf-8", errors="ignore")).hexdigest()
+    cache_file = os.path.join(cache_dir, f"{code_hash}.json")
+    
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r") as f:
+                cached_res = json.load(f)
+            print(f"[OpenRouter] Persistent Cache HIT ({code_hash[:8]}). Bypassing API query.")
+            return cached_res
+        except Exception:
+            pass
+
     api_key = os.environ.get("OPEN_ROUTER_API_KEY")
     if not api_key:
         print("[OpenRouter] ERROR: OPEN_ROUTER_API_KEY not set in environment.")
-        return _empty
-
-    if not decompiled_c or not decompiled_c.strip():
-        print("[OpenRouter] WARNING: empty decompiled_c, skipping.")
         return _empty
 
     try:
@@ -188,10 +208,18 @@ def get_openrouter_suggestions(
             "\n\n".join(parts)
         )
 
+    strings_header = ""
+    if string_literals:
+        unique_strs = sorted(list(set(string_literals)))[:10] # cap at 10 literal blocks
+        strings_header = "REFERENCED STRING LITERALS:\n```c\n{}\n```\n\n".format(
+            "\n".join(f'"{s}"' for s in unique_strs)
+        )
+
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         context_header=context_header,
         callers_header=callers_header,
         callees_header=callees_header,
+        strings_header=strings_header,
         decompiled_c=decompiled_c.strip(),
     )
 
@@ -234,7 +262,16 @@ def get_openrouter_suggestions(
         print("[OpenRouter] Error reading stream: {}".format(e))
         return _empty
 
-    return _parse_suggestions(raw_text)
+    res_json = _parse_suggestions(raw_text)
+    if res_json and (res_json.get("variables") or res_json.get("parameters") or res_json.get("function_name")):
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            with open(cache_file, "w") as f:
+                json.dump(res_json, f, indent=2)
+        except Exception:
+            pass
+
+    return res_json
 
 
 # ---------------------------------------------------------------------------
