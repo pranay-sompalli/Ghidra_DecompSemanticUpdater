@@ -24,6 +24,17 @@ from ghidra_decompiler.type_utils import resolve_type, is_array_type, is_pointer
 from ghidra_decompiler.alignment import align_usage_with_called_functions
 from ghidra_decompiler.core_functions import getCoreFunctions
 from ghidra_decompiler.find_main import find_main
+from ghidra_decompiler.platform_utils import (
+    get_binary_format,
+    get_architecture,
+    get_text_section_names,
+    get_data_section_names,
+    get_linker_noise_symbols,
+    get_boilerplate_pattern,
+    get_calling_convention_tokens,
+    get_ghidra_type_map,
+    describe_platform,
+)
 
 __all__ = [
     "enhance_decompilation_with_ai",
@@ -43,4 +54,14 @@ __all__ = [
     "align_usage_with_called_functions",
     "getCoreFunctions",
     "find_main",
+    # Platform utilities
+    "get_binary_format",
+    "get_architecture",
+    "get_text_section_names",
+    "get_data_section_names",
+    "get_linker_noise_symbols",
+    "get_boilerplate_pattern",
+    "get_calling_convention_tokens",
+    "get_ghidra_type_map",
+    "describe_platform",
 ]

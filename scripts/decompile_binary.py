@@ -32,6 +32,14 @@ from ghidra_decompiler import (
     sanitize_c_code,
     getCoreFunctions,
 )
+from ghidra_decompiler.platform_utils import (
+    describe_platform,
+    get_text_section_names,
+    get_data_section_names,
+    get_linker_noise_symbols,
+    get_ghidra_type_map,
+    get_calling_convention_tokens,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -84,6 +92,12 @@ def run_decompiler(binary_path, model="openrouter/free"):
     # Analyze the program before decompiling (otherwise functions may be missing)
     pyghidra.api.analyze(program)
 
+    # ── Detect binary format and architecture ───────────────────────────────────────
+    fmt, arch = describe_platform(program)
+    _TEXT_SECTIONS = get_text_section_names(fmt)
+    _DATA_SECTIONS = get_data_section_names(fmt)
+    _LINKER_NOISE  = get_linker_noise_symbols(fmt)
+
     # One-time pass: strip _s/_p leading underscores across all functions
     strip_leading_underscores(program)
 
@@ -103,7 +117,7 @@ def run_decompiler(binary_path, model="openrouter/free"):
         if func.isThunk() or func.isExternal() or func.isLibrary() or func.isInline():
             continue
         section = func.getProgram().getMemory().getBlock(func.getEntryPoint()).getName()
-        if section not in (".text", "__text"):
+        if section not in _TEXT_SECTIONS:
             continue
         coreFunctions[func.getName()] = func
 
@@ -170,16 +184,10 @@ def run_decompiler(binary_path, model="openrouter/free"):
     from ghidra.program.model.symbol import SymbolType
     globals_c = []
     emitted_globals = set()
-    # ELF/linker noise symbols to always exclude from the C output
-    _LINKER_NOISE = {
-        "data_start", "__data_start", "__dso_handle", "__bss_start",
-        "_edata", "_end", "__libc_csu_init", "__libc_csu_fini",
-        "_init", "_fini", "_start",
-    }
     for sym in program.getSymbolTable().getSymbolIterator():
         if sym.isGlobal() and sym.getSymbolType() == SymbolType.LABEL:
             sym_name = sym.getName()
-            # Skip: already emitted, linker noise, names with dots, or leading __
+            # Skip: already emitted, linker/runtime noise, names with dots, double-underscore
             if sym_name in emitted_globals:
                 continue
             if sym_name in _LINKER_NOISE:
@@ -188,13 +196,13 @@ def run_decompiler(binary_path, model="openrouter/free"):
                 continue
             address = sym.getAddress()
             block = program.getMemory().getBlock(address)
-            if block and not block.isExecute() and (block.getName() in [".data", ".bss", "__data", "__bss", "__common"]):
+            if block and not block.isExecute() and block.getName() in _DATA_SECTIONS:
                 data = program.getListing().getDataAt(address)
                 if data:
                     dt = data.getDataType()
                     globals_c.append(f"{dt.getName()} {sym_name};")
                     emitted_globals.add(sym_name)
-    
+
     if globals_c:
         bodies.append("/* Global Variables */")
         bodies.extend(globals_c)
@@ -222,17 +230,8 @@ def run_decompiler(binary_path, model="openrouter/free"):
     full_c_text = " ".join(bodies)
     used_words = set(re.findall(r'\b[a-zA-Z_]\w*\b', full_c_text))
 
-    # Dynamic Ghidra Typedefs mapping
-    ghidra_type_map = {
-        "undefined": "unsigned char",
-        "byte": "unsigned char",
-        "undefined2": "unsigned short",
-        "ushort": "unsigned short",
-        "undefined4": "unsigned int",
-        "uint": "unsigned int",
-        "undefined8": "unsigned long long",
-        "ulong": "unsigned long"
-    }
+    # Dynamic Ghidra Typedefs — architecture-aware
+    ghidra_type_map = get_ghidra_type_map(arch)
     
     dynamic_typedefs = []
     for gtype, ctype in ghidra_type_map.items():
@@ -268,7 +267,10 @@ def run_decompiler(binary_path, model="openrouter/free"):
     )
 
     with open(output_filename, "w") as f:
-        f.write("\n".join(final_output))
+        out_str = "\n".join(final_output)
+        # Strip architecture/format-specific calling convention noise tokens globally
+        out_str = _re.sub(get_calling_convention_tokens(arch), '', out_str)
+        f.write(out_str)
 
     # Save suggestions to JSON for the Ghidra Script to import back into the UI
     import json

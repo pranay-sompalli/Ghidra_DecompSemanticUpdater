@@ -1,67 +1,191 @@
 """
 ghidra_decompiler.core_functions
 ---------------------------------
-Utilities for collecting the set of user-defined .text functions reachable
-from main via BFS.
-
-Public API
-----------
-    getCoreFunctions(coreFunctions, program=None) -> dict[str, Function]
+Format-aware core function discovery engine implementing a 4-Phase framework:
+Multi-Root Collection, Boilerplate Filtering, Priority Scoring, and
+Call-Tree Topological Ordering.  Supports ELF, Mach-O, and PE binaries.
 """
 
+import re
 from ghidra_decompiler.find_main import find_main
+from ghidra_decompiler.platform_utils import get_binary_format, get_boilerplate_pattern
 
 
-def _get_outgoing_funcs(func, coreFunctions):
+def getCoreFunctions(coreFunctions, program):
     """
-    Return Function objects called by `func` that are in coreFunctions
-    (i.e., user-defined .text functions). Library/external calls are
-    automatically excluded since they won't be in the dict.
-    """
-    from ghidra.util.task import ConsoleTaskMonitor
-
-    called = func.getCalledFunctions(ConsoleTaskMonitor())
-    return [coreFunctions[cf.getName()] for cf in called if cf.getName() in coreFunctions]
-
-
-def getCoreFunctions(coreFunctions, program=None):
-    """
-    Starting from main (found via find_main), BFS through all outgoing calls
-    to collect every reachable user-defined function.
+    Executes a comprehensive 4-Phase discovery framework to map, filter, score,
+    and topologically order core functions suitable for advanced LLM decompilation.
 
     Parameters
     ----------
     coreFunctions : dict[str, Function]
-        All .text functions keyed by name (typically filtered by section).
-    program : ghidra.program.model.listing.Program, optional
-        Required only when find_main needs to probe the entry-point symbol table.
+        All basic .text functions pre-filtered by section.
+    program : ghidra.program.model.listing.Program
+        Active Ghidra program database instance.
 
     Returns
     -------
     dict[str, Function]
-        Subset of coreFunctions reachable from main, with "main" always first.
+        Validated, scored, and topologically ordered core functions mapping.
     """
-    filtered = {}
+    from ghidra.util.task import ConsoleTaskMonitor
+    from ghidra.program.model.symbol import RefType
 
+    monitor = ConsoleTaskMonitor()
+
+    # ── PHASE 1: MULTI-ROOT COLLECTION & REFERENCE GRAPH SCAN ──
+    discovered_names = set()
+    pointer_referenced = set()
+    queue = []
+
+    # Seed root 1: main function
     main_func = find_main(coreFunctions, program)
-    if not main_func:
-        return filtered
+    if main_func:
+        queue.append(main_func)
+        discovered_names.add(main_func.getName())
 
-    queue   = [main_func]
+    # Seed root 2: Globally exported external entry points
+    entry_iter = program.getSymbolTable().getExternalEntryPointIterator()
+    while entry_iter.hasNext():
+        addr = entry_iter.next()
+        efunc = program.getFunctionManager().getFunctionAt(addr)
+        if efunc and efunc.getName() in coreFunctions:
+            if efunc.getName() not in discovered_names:
+                queue.append(efunc)
+                discovered_names.add(efunc.getName())
+
+    # Reference scan: Pre-sweep address references mapping to candidate targets
+    ref_mgr = program.getReferenceManager()
+    for name, f in coreFunctions.items():
+        refs = ref_mgr.getReferencesTo(f.getEntryPoint())
+        for ref in refs:
+            # If reference originates from data or instructions, it's statically pointer-referenced
+            if ref.getReferenceType().isData() or ref.getReferenceType().isCall() == False:
+                pointer_referenced.add(name)
+                if name not in discovered_names:
+                    queue.append(f)
+                    discovered_names.add(name)
+                break
+
+    # BFS sweep to collect all outgoing statically connected routines
     visited = set()
-    filtered["main"] = main_func
-
     while queue:
-        func = queue.pop(0)
-        name = func.getName()
-        if name in visited:
+        curr = queue.pop(0)
+        cname = curr.getName()
+        if cname in visited:
             continue
-        visited.add(name)
-        if func != main_func:
-            filtered[name] = func
+        visited.add(cname)
+        discovered_names.add(cname)
 
-        for callee in _get_outgoing_funcs(func, coreFunctions):
-            if callee.getName() not in visited:
+        for callee in curr.getCalledFunctions(monitor):
+            callee_name = callee.getName()
+            if callee_name in coreFunctions and callee_name not in visited:
                 queue.append(callee)
+                discovered_names.add(callee_name)
 
-    return filtered
+    # ── PHASE 2: FILTERING (BOILERPLATE & SIZE/CALLER DENSITY) ──
+    # Use a format-aware boilerplate regex so Mach-O dyld stubs and PE CRT
+    # functions are correctly excluded regardless of binary origin.
+    fmt = get_binary_format(program)
+    boilerplate_rx = get_boilerplate_pattern(fmt)
+
+    # Calculate global incoming callers for density evaluation
+    caller_counts = {}
+    for name in discovered_names:
+        f = coreFunctions[name]
+        callers = f.getCallingFunctions(monitor)
+        caller_counts[name] = sum(1 for c in callers if c.getName() in coreFunctions)
+
+    filtered_candidates = {}
+    scores = {}
+    COMPLEXITY_THRESHOLD = 2  # minimum branch complexity to be considered structurally important
+
+    for name in discovered_names:
+        # Exclude autogenerated compiler boilerplate setup loops
+        if boilerplate_rx.match(name):
+            continue
+
+        f = coreFunctions[name]
+        
+        # Metric A: Complexity Proxy (branch instruction count)
+        insts = program.getListing().getInstructions(f.getBody(), True)
+        branches = sum(1 for inst in insts if inst.getFlowType().isJump() or inst.getFlowType().isConditional())
+        
+        # Metric B: String Constant References
+        string_refs = 0
+        insts = program.getListing().getInstructions(f.getBody(), True)
+        for inst in insts:
+            for ref in inst.getReferencesFrom():
+                if ref.getReferenceType().isData():
+                    data = program.getListing().getDataAt(ref.getToAddress())
+                    if data and data.hasStringValue():
+                        string_refs += 1
+
+        has_string_refs = (string_refs > 0)
+        c_count = caller_counts.get(name, 0)
+        is_ptr_ref = (name in pointer_referenced)
+
+        # Pragmatic Gate Condition: Keep if it meets any semantic or structural threshold
+        keep_function = (
+            branches > COMPLEXITY_THRESHOLD
+            or c_count > 3
+            or has_string_refs
+            or is_ptr_ref
+            or f == main_func
+        )
+
+        if keep_function:
+            filtered_candidates[name] = f
+            
+            # Compute Final Priority Score instantly
+            c_weight = c_count * 0.5
+            s_weight = string_refs * 2.0
+            p_weight = 1.5 if is_ptr_ref else 0.0
+            scores[name] = float(branches) + c_weight + s_weight + p_weight
+
+    # ── PHASE 4: TOPOLOGICAL ORDERING (LEAVES FIRST) ──
+    # Build reverse dependency mappings mapping functions to outgoing user calls
+    callees_map = {}
+    in_degree = {}
+    
+    for name, f in filtered_candidates.items():
+        called = f.getCalledFunctions(monitor)
+        # Filter dependencies strictly to candidates residing in the current validation subset
+        valid_callees = {c.getName() for c in called if c.getName() in filtered_candidates}
+        callees_map[name] = valid_callees
+        in_degree[name] = len(valid_callees)
+
+    ordered_core = {}
+    
+    # Process tiers iteratively from leaves (in_degree == 0) upwards
+    while filtered_candidates:
+        # Extract active leaf tier
+        leaves = [name for name in filtered_candidates if in_degree.get(name, 0) == 0]
+        
+        if not leaves:
+            # Circular dependency fallback: flush highest scoring loop node to break cycles
+            sorted_remaining = sorted(filtered_candidates.keys(), key=lambda n: scores[n], reverse=True)
+            leaves = [sorted_remaining[0]]
+
+        # Order items inside the current level strictly by descending Priority Score
+        leaves.sort(key=lambda n: scores[n], reverse=True)
+
+        from ghidra_decompiler.semantics import change_function_name
+
+        for leaf in leaves:
+            f_obj = filtered_candidates.pop(leaf)
+            out_key = leaf
+            if f_obj == main_func:
+                out_key = "main"
+                if f_obj.getName() != "main":
+                    change_function_name(program, f_obj, "main")
+            
+            ordered_core[out_key] = f_obj
+            # Decrement dependencies for parent routines calling this leaf
+            for parent, targets in callees_map.items():
+                if leaf in targets:
+                    targets.remove(leaf)
+                    in_degree[parent] = len(targets)
+
+    print(f"[Discovery] Completed 4-Phase framework: Validated {len(ordered_core)} core functions.")
+    return ordered_core
