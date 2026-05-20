@@ -141,19 +141,3 @@ The pipeline auto-detects format and architecture. Output is written to `output/
 | `openrouter/free` | Auto-route to fastest available free model | Free |
 
 ---
-
-## 🔭 Research & Thesis Directions
-
-This framework is designed to support graduate-level research in binary analysis and AI-assisted reverse engineering. Key open research directions:
-
-1. **Systematic Evaluation** — Name recovery rate, type accuracy, compilability across AnghaBench/ReSym
-2. **Prompt Ablation Study** — Which context signals (strings, callees, callers, CoT) matter most?
-3. **Struct / Composite Type Recovery** — Reconstruct struct definitions from pointer arithmetic patterns
-4. **Hallucination Detection** — Post-filter LLM suggestions via static consistency checks
-5. **Vulnerability Surface Detection** — Flag `gets`, `strcpy`, unbounded `scanf` in enriched output
-6. **Cross-Binary Name Registry** — SQLite index of confirmed names for zero-cost reuse
-7. **Firmware / Embedded Mode** — ARM Cortex-M ISR vector seeding + MMIO register naming
-
----
-
-*Built with ❤️ for rigorous reverse engineering research.*

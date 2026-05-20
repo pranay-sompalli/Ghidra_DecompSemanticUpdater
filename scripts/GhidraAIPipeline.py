@@ -2,6 +2,7 @@
 # @category=Spring2026.GhidraScripts
 # @keybinding ctrl alt a
 # @menupath Tools.AI.Run AI Decompiler Pipeline
+# @toolbar exec.png
 
 import os
 import json
