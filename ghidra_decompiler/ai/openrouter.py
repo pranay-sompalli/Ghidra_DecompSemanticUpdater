@@ -60,6 +60,9 @@ Rules:
 - Use standard C type strings: "int", "unsigned int", "long", "char",
   "char *", "char **", "void *", "void", "float", "double",
   "unsigned char", "short", "unsigned short".
+- Analyze the provided C code for custom types that might be used in the code and add them to the custom_types list. For each custom type, provide the name, type, and members (for struct and union) or values (for enum). 
+- For "struct" and "union" custom types, ensure memory offsets are precise. A "union" must have all member offsets set to 0. A "struct" must have sequential offsets accounting for standard data-type sizes and alignment padding.
+- If loose stack primitive variables (e.g., buffer arrays, ints, floats) are clustered together and behave like fields of a single struct, group them into a custom type, and update those original variable identifiers to use that new custom type name.
 - Prefer descriptive, lower_snake_case names (e.g. "buffer_size", "file_ptr").
 - If a variable or parameter already has a reasonable name, you may keep it
   (omit from the list or repeat the same name).
@@ -87,6 +90,36 @@ JSON schema (strict):
   ],
   "defines": [
     "#define MAX_BUFFER 1024"
+  ],
+  "custom_types": [
+    {
+      "name": "<struct_name>",
+      "type": "struct", 
+      "members": [
+        {"offset": 0, "name": "<field_name>", "type": "int"},
+        {"offset": 4, "name": "<field_name>", "type": "char*"}
+      ]
+    },
+    {
+      "name": "<union_name>",
+      "type": "union",
+      "members": [
+        {"offset": 0, "name": "<field_name>", "type": "int"},
+        {"offset": 0, "name": "<field_name>", "type": "char*"} 
+      ]
+    },
+    {
+      "name": "<enum_name>",
+      "type": "enum",
+      "values": [
+        {"name": "<value_name>", "value": 0}
+      ]
+    },
+    {
+      "name": "<typedef_name>",
+      "type": "typedef",
+      "underlying_type": "<underlying_type>"
+    }
   ]
 }
 """
@@ -119,6 +152,7 @@ def get_openrouter_suggestions(
     caller_snippets=None,
     callee_snippets=None,
     string_literals=None,
+    clear_cache=False,
 ):
     """
     Send decompiled_c to the OpenRouter API and return name/type suggestions.
@@ -147,7 +181,7 @@ def get_openrouter_suggestions(
             {"name": str, "new_name": str, "new_type_str": str}
         "includes" and "defines" are lists of strings.
     """
-    _empty = {"function_name": None, "variables": [], "parameters": [], "globals": [], "includes": [], "defines": []}
+    _empty = {"function_name": None, "variables": [], "parameters": [], "globals": [], "includes": [], "defines": [], "custom_types": []}
 
     if not decompiled_c or not decompiled_c.strip():
         print("[OpenRouter] WARNING: empty decompiled_c, skipping.")
@@ -158,8 +192,15 @@ def get_openrouter_suggestions(
     cache_dir = os.path.expanduser("~/.ghidra_ai_cache")
     code_hash = hashlib.md5(decompiled_c.strip().encode("utf-8", errors="ignore")).hexdigest()
     cache_file = os.path.join(cache_dir, f"{code_hash}.json")
-    
-    if os.path.exists(cache_file):
+
+    if clear_cache and os.path.exists(cache_file):
+        try:
+            os.remove(cache_file)
+            print(f"[OpenRouter] Cache bypass flag set. Purged cache: {cache_file}")
+        except Exception as e:
+            print(f"[OpenRouter] Could not clear cache file: {e}")
+
+    if not clear_cache and os.path.exists(cache_file):
         try:
             with open(cache_file, "r") as f:
                 cached_res = json.load(f)
@@ -177,7 +218,7 @@ def get_openrouter_suggestions(
         from openai import OpenAI, RateLimitError
     except ImportError:
         print("[OpenRouter] ERROR: openai not installed. "
-              "Run: pip install openai")
+            "Run: pip install openai")
         return _empty
 
     client = OpenAI(
@@ -283,7 +324,7 @@ def _parse_suggestions(raw_text):
     Extract and validate the JSON suggestions from the LLM response text.
     Handles cases where the model wraps JSON in markdown code fences.
     """
-    _empty = {"function_name": None, "variables": [], "parameters": [], "globals": [], "includes": [], "defines": []}
+    _empty = {"function_name": None, "variables": [], "parameters": [], "globals": [], "includes": [], "defines": [], "custom_types": []}
 
     if not raw_text:
         return _empty

@@ -53,7 +53,7 @@ class DecompilerPipeline:
             if m_results.decompileCompleted():
                 self.global_context_c = m_results.getDecompiledFunction().getC()
 
-    def run_semantic_and_ai_pass(self, skip_ai_for_funcs=None):
+    def run_semantic_and_ai_pass(self, skip_ai_for_funcs=None, clear_cache=False):
         """
         Pass 1: Setup basic semantics, extract referenced string literals, and dispatch
         parallelized LLM requests to gather rich semantic suggestions.
@@ -119,7 +119,8 @@ class DecompilerPipeline:
                         context_c=p["context_c"],
                         caller_snippets=p["caller_snippets"],
                         callee_snippets=p["callee_snippets"],
-                        string_literals=p["string_literals"]
+                        string_literals=p["string_literals"],
+                        clear_cache=clear_cache
                     ): p["name"] for p in tasks_payloads
                 }
 
@@ -155,12 +156,12 @@ class DecompilerPipeline:
                         self.program, func, aligned_c, self.core_funcs.values()
                     )
 
-    def execute_full_pipeline(self, skip_ai_for_funcs=None):
+    def execute_full_pipeline(self, skip_ai_for_funcs=None, clear_cache=False):
         """
         Run the complete pipeline from start to finish.
         """
         self.capture_global_context()
-        self.run_semantic_and_ai_pass(skip_ai_for_funcs=skip_ai_for_funcs)
+        self.run_semantic_and_ai_pass(skip_ai_for_funcs=skip_ai_for_funcs, clear_cache=clear_cache)
         self.apply_suggestions()
         self.run_alignment_passes()
         

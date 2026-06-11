@@ -63,6 +63,11 @@ def _parse_args():
         default="openrouter/free",
         help="The OpenRouter model ID to use (default: openrouter/free)",
     )
+    parser.add_argument(
+        '-c', '--clear-cache', 
+        action='store_true',
+        help='Clear the persistent cross-binary MD5 file cache before running'
+    )
     return parser.parse_args()
 
 
@@ -125,7 +130,7 @@ def run_decompiler(binary_path, model="openrouter/free"):
 
     # ── AI-enhanced decompilation pipeline ──────────────────────────────────
     pipeline = DecompilerPipeline(program, iface, core_funcs, model=model)
-    stored_suggestions = pipeline.execute_full_pipeline()
+    stored_suggestions = pipeline.execute_full_pipeline(clear_cache=args.clear_cache)
 
     # ── Final pass: collect headers/defines then re-decompile ────────────────
     all_includes = set()
