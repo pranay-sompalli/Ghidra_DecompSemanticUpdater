@@ -20,15 +20,7 @@ def resolve_type(type_str, program):
     if not type_str:
         return None
 
-    from ghidra.program.model.data import (
-        IntegerDataType, UnsignedIntegerDataType,
-        LongDataType, UnsignedLongDataType,
-        ShortDataType, UnsignedShortDataType,
-        CharDataType, UnsignedCharDataType,
-        FloatDataType, DoubleDataType,
-        VoidDataType, PointerDataType
-    )
-
+    import re
     ts = type_str.strip()
 
     # 1. Handle pointers recursively (e.g., "char **" -> Pointer(Pointer(Char)))
@@ -36,19 +28,45 @@ def resolve_type(type_str, program):
         base_str = ts[:-1].strip()
         base_type = resolve_type(base_str, program)
         if base_type:
+            from ghidra.program.model.data import PointerDataType
             return PointerDataType(base_type)
         return None
 
-    # 2. Base type mapping
-    ts_lower = ts.lower().replace(" ", "")  # "unsigned int" -> "unsignedint"
+    # Strip prefixes 'struct ', 'union ', 'enum '
+    ts_clean = re.sub(r'^(struct|union|enum)\s+', '', ts).strip()
+
+    # 2. Base type mapping using cleaned string
+    ts_lower = ts_clean.lower().replace(" ", "")  # "unsigned int" -> "unsignedint"
+
+    from ghidra.program.model.data import (
+        IntegerDataType, UnsignedIntegerDataType,
+        LongDataType, UnsignedLongDataType,
+        LongLongDataType, UnsignedLongLongDataType,
+        ShortDataType, UnsignedShortDataType,
+        CharDataType, UnsignedCharDataType,
+        FloatDataType, DoubleDataType,
+        VoidDataType
+    )
+
+    try:
+        pointer_size = program.getDataTypeManager().getDataOrganization().getPointerSize()
+    except Exception:
+        pointer_size = 8
+
+    if pointer_size == 8:
+        long_t = LongLongDataType()
+        ulong_t = UnsignedLongLongDataType()
+    else:
+        long_t = LongDataType()
+        ulong_t = UnsignedLongDataType()
 
     _base_map = {
         "int":           IntegerDataType(),
         "uint":          UnsignedIntegerDataType(),
         "unsignedint":   UnsignedIntegerDataType(),
-        "long":          LongDataType(),
-        "ulong":         UnsignedLongDataType(),
-        "unsignedlong":  UnsignedLongDataType(),
+        "long":          long_t,
+        "ulong":         ulong_t,
+        "unsignedlong":  ulong_t,
         "short":         ShortDataType(),
         "ushort":        UnsignedShortDataType(),
         "unsignedshort": UnsignedShortDataType(),
@@ -70,19 +88,37 @@ def resolve_type(type_str, program):
     try:
         dtm = program.getDataTypeManager()
         # Try common strings first
-        found = dtm.getDataType("/" + ts) or dtm.getDataType(ts)
+        found = dtm.getDataType("/" + ts_clean) or dtm.getDataType(ts_clean)
         if found:
             return found
 
         # Try common paths
-        for path in ["/BuiltInTypes/", "/generic_clib/"]:
-            found = dtm.getDataType(path + ts)
+        for path in ["/Recovered_Types/", "/BuiltInTypes/", "/generic_clib/"]:
+            found = dtm.getDataType(path + ts_clean)
             if found:
                 return found
     except Exception:
         pass
 
     print("[resolve_type] WARNING: could not resolve type '{}'".format(type_str))
+    return None
+
+
+def parse_array_type(type_str, program):
+    """
+    Parse array types like 'char[8]' or 'int[10]' into a Ghidra ArrayDataType.
+    """
+    if not type_str:
+        return None
+    import re
+    match = re.match(r'^(.+?)\s*\[\s*(\d+)\s*\]$', type_str.strip())
+    if match:
+        elem_type_str = match.group(1)
+        num_elements = int(match.group(2))
+        elem_type = resolve_type(elem_type_str, program)
+        if elem_type and num_elements > 0:
+            from ghidra.program.model.data import ArrayDataType
+            return ArrayDataType(elem_type, num_elements, elem_type.getLength())
     return None
 
 

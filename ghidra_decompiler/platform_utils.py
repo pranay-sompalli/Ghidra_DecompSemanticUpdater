@@ -218,19 +218,16 @@ def get_calling_convention_tokens(arch):
     Returns a regex pattern string matching calling-convention noise tokens
     to strip from the final C output for this architecture.
     """
+    # Common x86/Ghidra calling conventions stripped on all platforms
+    _common = r'processEntry|__cdecl|__stdcall|__fastcall|__thiscall|__pascal|__vectorcall|__regcall'
     if arch in ("x86", "x86_64"):
-        # x86 Windows / Linux calling conventions emitted by Ghidra
-        return (
-            r'\b(processEntry|__cdecl|__stdcall|__fastcall'
-            r'|__thiscall|__pascal|__vectorcall|__regcall)\b\s*'
-        )
+        return r'\b(' + _common + r')\b\s*'
     if arch in ("ARM32", "ARM64"):
-        # ARM ABI annotations Ghidra may emit
-        return r'\b(processEntry|__aapcs|__aapcs_vfp|__apcs|__arm)\b\s*'
+        return r'\b(' + _common + r'|__aapcs|__aapcs_vfp|__apcs|__arm)\b\s*'
     if arch in ("MIPS", "MIPS64"):
-        return r'\b(processEntry|__mips16)\b\s*'
-    # Generic fallback — just strip processEntry
-    return r'\b(processEntry)\b\s*'
+        return r'\b(' + _common + r'|__mips16)\b\s*'
+    # Generic fallback — strip all common tokens
+    return r'\b(' + _common + r')\b\s*'
 
 
 # ---------------------------------------------------------------------------

@@ -268,11 +268,6 @@ def update_variable_names_and_types(program, func, updates):
     if not updates:
         return 0
 
-    # Build a name -> variable map covering parameters AND local variables.
-    var_map = {}
-    for var in func.getAllVariables():
-        var_map[var.getName()] = var
-
     updated_count = 0
     txId = program.startTransaction("Update Variables: " + func.getName())
     try:
@@ -285,7 +280,11 @@ def update_variable_names_and_types(program, func, updates):
                 print("  [skip] update entry missing 'name' key: {}".format(entry))
                 continue
 
-            var = var_map.get(current_name)
+            var = None
+            for v in func.getAllVariables():
+                if v.getName() == current_name:
+                    var = v
+                    break
             if var is None:
                 print("  [skip] variable '{}' not found in {}".format(
                     current_name, func.getName()))
@@ -307,9 +306,6 @@ def update_variable_names_and_types(program, func, updates):
 
                 if new_name is not None and new_name != current_name:
                     var.setName(new_name, SourceType.USER_DEFINED)
-                    # Keep the map in sync in case a later entry references the new name
-                    var_map.pop(current_name, None)
-                    var_map[new_name] = var
 
                 updated_count += 1
                 print("  [{}] {}: '{}' -> name='{}' type='{}'".format(
@@ -353,6 +349,43 @@ def _apply_function_name_suggestion(program, func, suggestions):
     return func_name
 
 
+# C keywords and primitive type names that must never be used as variable names.
+_C_RESERVED_NAMES = frozenset({
+    # Standard C keywords
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while",
+    # Common Ghidra/compiler type names
+    "bool", "uint", "ulong", "uchar", "ushort", "longlong", "ulonglong",
+    "byte", "word", "dword", "qword", "undefined",
+})
+
+
+def _is_safe_variable_name(name, program):
+    """Return False if *name* would be an invalid or unsafe C variable name.
+
+    Specifically rejects:
+    - C reserved keywords and primitive type spellings.
+    - Any type name registered in the program's DataTypeManager (e.g. 'Character').
+    - Names that are not valid C identifiers.
+    """
+    import re as _re
+    if not name or not _re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+        return False
+    if name in _C_RESERVED_NAMES:
+        return False
+    # Reject if a datatype with that exact name exists in the DTM
+    dtm = program.getDataTypeManager()
+    if dtm.getDataType("/" + name) is not None:
+        return False
+    from ghidra.program.model.data import CategoryPath
+    if dtm.getDataType(CategoryPath("/Recovered_Types").getPath() + "/" + name) is not None:
+        return False
+    return True
+
+
 def _apply_variable_suggestions(program, func, func_name, suggestions):
     var_updates = []
     for entry in suggestions.get("variables", []):
@@ -361,10 +394,16 @@ def _apply_variable_suggestions(program, func, func_name, suggestions):
         new_type_str = entry.get("new_type_str")
         new_type     = resolve_type(new_type_str, program) if new_type_str else None
 
+        # Guard: skip renames that would collide with C keywords or type names
+        if new_name and not _is_safe_variable_name(new_name, program):
+            print("  [skip] unsafe variable name suggested by LLM: '{}' -> '{}' (reserved or type name)".format(
+                current_name, new_name))
+            new_name = None  # still allow the type update if there is one
+
         if (new_name and new_name != current_name) or new_type is not None:
             var_updates.append({
                 "name":     current_name,
-                "new_name": new_name if new_name != current_name else None,
+                "new_name": new_name if new_name and new_name != current_name else None,
                 "new_type": new_type,
             })
 
@@ -474,6 +513,19 @@ def _apply_global_suggestions(program, func_name, suggestions):
 
                 # Update name
                 if new_name and new_name != current_name:
+                    # Prevent name collision with existing symbols at different addresses
+                    existing_syms = list(symbol_table.getSymbols(new_name))
+                    has_collision = False
+                    for esym in existing_syms:
+                        if esym.getAddress() != sym.getAddress():
+                            has_collision = True
+                            break
+                    if has_collision:
+                        if "guard" in new_name.lower():
+                            new_name = new_name.replace("guard", "guard_ptr")
+                        else:
+                            new_name = new_name + "_ptr"
+                        print("[OpenRouter]   Name collision detected for '{}', renaming to '{}'".format(current_name, new_name))
                     try:
                         sym.setName(new_name, SourceType.USER_DEFINED)
                         print("[OpenRouter]   global '{}' -> name='{}'".format(current_name, new_name))

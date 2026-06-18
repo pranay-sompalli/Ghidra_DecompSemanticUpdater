@@ -53,9 +53,11 @@ Your job is to infer the most semantically accurate names and C types for \
 every local variable and every function parameter visible in the code.
 
 Rules:
-- Only suggest names/types for identifiers that APPEAR in the provided code.
-- Do NOT invent variables that are not present.
-- Identify Global Variables (variables not declared inside the function body or its parameters, often prefixed with `_` or `DAT_`) and suggest their types based on how the function interacts with them (e.g., if passed to `%f` in scanf, it's a `float`).
+- CRITICAL: Only suggest names/types for identifiers that LITERALLY APPEAR as variable or parameter names in the provided code. Do NOT invent new variables. Do NOT add entries for variables that are not declared in the code.
+- CRITICAL: Do NOT use C reserved keywords or primitive type names as new_name values. Never use 'long', 'float', 'int', 'char', 'double', 'void', 'unsigned', 'struct', 'short', 'bool' etc. as variable names.
+- CRITICAL: Do NOT use struct/union/enum type names as variable names. Type names (like 'Character', 'Player') identify types, not variables.
+- CRITICAL: Global variables in the 'globals' list must be actual symbol names visible in the decompiled code (like PTR___stack_chk_guard_00102000, DAT_00104020). Do NOT list raw hex constants (0x10, 0x2a) or struct field access patterns as globals.
+- Identify Global Variables (variables not declared inside the function body or its parameters, often prefixed with `PTR_` or `DAT_`) and suggest their types based on how the function interacts with them (e.g., if passed to `%f` in scanf, it's a `float`).
 - Analyze what the function does and suggest a descriptive function name (e.g., 'verify_password' instead of 'check').
 - Use standard C type strings: "int", "unsigned int", "long", "char",
   "char *", "char **", "void *", "void", "float", "double",
@@ -360,6 +362,40 @@ def get_openrouter_suggestions(
 # Response parsing
 # ---------------------------------------------------------------------------
 
+def _try_repair_truncated_json(s):
+    """Scan a truncated JSON candidate string and append missing closing delimiters."""
+    stack = []
+    in_string = False
+    escaped = False
+    for char in s:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '"':
+                in_string = False
+        else:
+            if char == '"':
+                in_string = True
+            elif char in ('{', '['):
+                stack.append(char)
+            elif char in ('}', ']'):
+                if stack:
+                    top = stack[-1]
+                    if (char == '}' and top == '{') or (char == ']' and top == '['):
+                        stack.pop()
+    if in_string:
+        s += '"'
+    s = s.rstrip().rstrip(',')
+    for opener in reversed(stack):
+        if opener == '{':
+            s += '}'
+        elif opener == '[':
+            s += ']'
+    return s
+
+
 def _parse_suggestions(raw_text):
     """
     Extract and validate the JSON suggestions from the LLM response text.
@@ -386,16 +422,33 @@ def _parse_suggestions(raw_text):
             try:
                 data = json.loads(json_candidate)
             except json.JSONDecodeError:
+                # Try to repair and reload
+                repaired = _try_repair_truncated_json(json_candidate)
+                try:
+                    data = json.loads(repaired)
+                except json.JSONDecodeError:
+                    pass
+        else:
+            # Truncated before any closing brace
+            json_candidate = stripped[first_brace:]
+            repaired = _try_repair_truncated_json(json_candidate)
+            try:
+                data = json.loads(repaired)
+            except json.JSONDecodeError:
                 pass
 
     if data is None:
-        # Fall back to parsing the whole stripped text
+        # Fall back to parsing the whole stripped text (repaired if needed)
         try:
             data = json.loads(stripped)
         except json.JSONDecodeError as e:
-            print("[OpenRouter] JSON parse error: {}".format(e))
-            print("[OpenRouter] Raw response was:\n{}".format(raw_text[:500]))
-            return _empty
+            try:
+                repaired = _try_repair_truncated_json(stripped)
+                data = json.loads(repaired)
+            except json.JSONDecodeError:
+                print("[OpenRouter] JSON parse error: {}".format(e))
+                print("[OpenRouter] Raw response was:\n{}".format(raw_text[:500]))
+                return _empty
 
     # Validate and sanitize
     func_name  = data.get("function_name", None)

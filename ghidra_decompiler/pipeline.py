@@ -168,6 +168,20 @@ class DecompilerPipeline:
         """
         self.capture_global_context()
         self.run_semantic_and_ai_pass(skip_ai_for_funcs=skip_ai_for_funcs, clear_cache=clear_cache)
+        
+        # Collect, sanitize and register all custom types
+        all_custom_types = []
+        for suggestions in self.stored_suggestions.values():
+            if isinstance(suggestions, dict) and "custom_types" in suggestions:
+                all_custom_types.extend(suggestions["custom_types"])
+        if all_custom_types:
+            try:
+                from ghidra_decompiler.custom_types import sanitize_custom_types, register_custom_datatypes
+                sanitized_types = sanitize_custom_types(all_custom_types)
+                register_custom_datatypes(self.program, sanitized_types)
+            except Exception as cte:
+                print(f"[Pipeline] WARNING: Could not register custom types: {cte}")
+
         self.apply_suggestions()
         self.run_alignment_passes()
         
