@@ -287,9 +287,14 @@ def run_decompiler(binary_path, model="openrouter/free"):
     serializable_suggestions = {}
     for name, s in stored_suggestions.items():
         serializable_suggestions[name] = {
-            "name": s.get("name"),
-            "variables": s.get("variables", {}),
+            "name": s.get("function_name") or s.get("name"),
+            "function_name": s.get("function_name") or s.get("name"),
+            "variables": s.get("variables", []),
             "parameters": s.get("parameters", []),
+            "globals": s.get("globals", []),
+            "custom_types": s.get("custom_types", []),
+            "includes": s.get("includes", []),
+            "defines": s.get("defines", []),
             "context": s.get("context", "")
         }
     

@@ -1,5 +1,4 @@
-# Apply AI suggestions from the Gemini Pipeline back into the Ghidra UI.
-# @author Antigravity
+# Apply AI suggestions from the AI Pipeline back into the Ghidra UI.
 # @category Decompiler
 # @keybinding 
 # @menupath 
@@ -44,13 +43,27 @@ def apply_suggestions():
                 func.setComment(data["context"])
 
             # 2. Update Variable Names
-            variables = data.get("variables", {})
+            variables = data.get("variables", [])
             existing_vars = {v.getName(): v for v in func.getAllVariables()}
-            for old_name, var_info in variables.items():
-                if old_name in existing_vars:
-                    v = existing_vars[old_name]
-                    new_name = var_info.get("name")
-                    if new_name:
+            if isinstance(variables, dict):
+                for old_name, var_info in variables.items():
+                    if old_name in existing_vars:
+                        v = existing_vars[old_name]
+                        new_name = var_info.get("name") if isinstance(var_info, dict) else var_info
+                        if new_name:
+                            try:
+                                v.setName(new_name, SourceType.USER_DEFINED)
+                                print("  Renamed variable: {} -> {}".format(old_name, new_name))
+                            except Exception as ve:
+                                print("  Could not rename {} to {}: {}".format(old_name, new_name, str(ve)))
+            elif isinstance(variables, list):
+                for var_info in variables:
+                    if not isinstance(var_info, dict):
+                        continue
+                    old_name = var_info.get("name")
+                    new_name = var_info.get("new_name")
+                    if old_name and new_name and old_name in existing_vars:
+                        v = existing_vars[old_name]
                         try:
                             v.setName(new_name, SourceType.USER_DEFINED)
                             print("  Renamed variable: {} -> {}".format(old_name, new_name))

@@ -128,11 +128,17 @@ class DecompilerPipeline:
                     func_name = future_to_name[future]
                     try:
                         suggestions = future.result()
-                        if suggestions and suggestions.get("function_name"):
+                        if suggestions and any(suggestions.get(k) for k in ("variables", "parameters", "function_name", "context", "custom_types")):
+                            if not suggestions.get("function_name"):
+                                print(f"[OpenRouter] WARNING: No function_name in suggestions for '{func_name}', storing partial results.")
                             self.stored_suggestions[func_name] = suggestions
                             print(f"[OpenRouter] Successfully mapped suggestions for '{func_name}'.")
+                        else:
+                            print(f"[OpenRouter] WARNING: Empty/unusable suggestions returned for '{func_name}'. Skipping.")
                     except Exception as e:
+                        import traceback
                         print(f"[OpenRouter] Future execution exception for '{func_name}': {e}")
+                        traceback.print_exc()
 
     def apply_suggestions(self):
         """

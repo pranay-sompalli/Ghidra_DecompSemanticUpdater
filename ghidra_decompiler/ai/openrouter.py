@@ -275,7 +275,7 @@ def get_openrouter_suggestions(
                     {"role": "user",   "content": user_prompt},
                 ],
                 stream=True,
-                max_tokens=2048,
+                max_tokens=8192,
                 temperature=0.2,
             )
             break  # Success
@@ -291,17 +291,56 @@ def get_openrouter_suggestions(
             print("[OpenRouter] API call failed: {}".format(e))
             return _empty
 
-    # Collect all streamed chunks into a single response string
     raw_text = ""
-    try:
-        for chunk in stream:
-            if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    raw_text += delta
-    except Exception as e:
-        print("[OpenRouter] Error reading stream: {}".format(e))
-        return _empty
+    for parse_attempt in range(max_attempts):
+        # Collect all streamed chunks into a single response string
+        raw_text = ""
+        chunk_count = 0
+        try:
+            for chunk in stream:
+                chunk_count += 1
+                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        raw_text += delta
+        except Exception as e:
+            print("[OpenRouter] Error reading stream: {}".format(e))
+            return _empty
+
+        print(f"[OpenRouter] Stream complete: {chunk_count} chunk(s), {len(raw_text)} char(s) received.")
+
+        if not raw_text.strip():
+            print("[OpenRouter] WARNING: Stream returned empty content. Model may have refused or timed out.")
+            return _empty
+
+        # Detect non-JSON safety/refusal responses and retry with a new API call
+        if "{" not in raw_text:
+            print(f"[OpenRouter] WARNING: Response contains no JSON (attempt {parse_attempt+1}/{max_attempts}): {repr(raw_text[:100])}")
+            if parse_attempt < max_attempts - 1:
+                print("[OpenRouter] Retrying API call...")
+                try:
+                    stream = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": _SYSTEM_PROMPT},
+                            {"role": "user",   "content": user_prompt},
+                        ],
+                        stream=True,
+                        max_tokens=8192,
+                        temperature=0.2,
+                    )
+                except Exception as e:
+                    print("[OpenRouter] Retry API call failed: {}".format(e))
+                    return _empty
+                continue
+            else:
+                print("[OpenRouter] All attempts returned non-JSON responses. Giving up.")
+                return _empty
+
+        if len(raw_text) < 50:
+            print(f"[OpenRouter] WARNING: Very short response: {repr(raw_text)}")
+
+        break  # Got a response with JSON content, proceed to parse
 
     res_json = _parse_suggestions(raw_text)
     if res_json and (res_json.get("variables") or res_json.get("parameters") or res_json.get("function_name")):
@@ -313,6 +352,8 @@ def get_openrouter_suggestions(
             pass
 
     return res_json
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -334,12 +375,27 @@ def _parse_suggestions(raw_text):
     stripped = re.sub(r"\s*```$",          "", stripped,  flags=re.MULTILINE)
     stripped = stripped.strip()
 
-    try:
-        data = json.loads(stripped)
-    except json.JSONDecodeError as e:
-        print("[OpenRouter] JSON parse error: {}".format(e))
-        print("[OpenRouter] Raw response was:\n{}".format(raw_text))
-        return _empty
+    # Models with chain-of-thought / "thinking" mode output prose before the JSON.
+    # Scan for the outermost { ... } block and use that.
+    data = None
+    first_brace = stripped.find("{")
+    if first_brace != -1:
+        last_brace = stripped.rfind("}")
+        if last_brace > first_brace:
+            json_candidate = stripped[first_brace:last_brace + 1]
+            try:
+                data = json.loads(json_candidate)
+            except json.JSONDecodeError:
+                pass
+
+    if data is None:
+        # Fall back to parsing the whole stripped text
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError as e:
+            print("[OpenRouter] JSON parse error: {}".format(e))
+            print("[OpenRouter] Raw response was:\n{}".format(raw_text[:500]))
+            return _empty
 
     # Validate and sanitize
     func_name  = data.get("function_name", None)
@@ -350,9 +406,17 @@ def _parse_suggestions(raw_text):
     includes   = data.get("includes", [])
     defines    = data.get("defines",  [])
 
+    custom_types = data.get("custom_types", [])
+    if not isinstance(custom_types, list):
+        print("[OpenRouter] WARNING: 'custom_types' is not a list, ignoring.")
+        custom_types = []
+
     print("[OpenRouter] Suggestions — Function='{}', {} var(s), {} param(s), {} global(s), "
-          "{} inc(s), {} def(s)".format(
-              func_name, len(variables), len(parameters), len(globals_list), len(includes), len(defines)))
+          "{} custom_type(s), {} inc(s), {} def(s)".format(
+              func_name, len(variables), len(parameters), len(globals_list),
+              len(custom_types), len(includes), len(defines)))
+    if not func_name:
+        print("[OpenRouter] WARNING: function_name is missing from response. Raw text snippet:\n{}".format(raw_text[:300] if raw_text else "(empty)"))
     if context:
         print("  [OpenRouter] Context: {}".format(context))
 
@@ -365,6 +429,10 @@ def _parse_suggestions(raw_text):
     for g in globals_list:
         print("  [OpenRouter] Global: {} -> {} ({})".format(
             g.get("name"), g.get("new_name"), g.get("new_type_str")))
+    for ct in custom_types:
+        members = ct.get("members") or ct.get("fields") or ct.get("values") or []
+        print("  [OpenRouter] Custom Type: {} ({}) — {} member(s)".format(
+            ct.get("name"), ct.get("type"), len(members)))
     for inc in includes:
         print("  [OpenRouter] Include: {}".format(inc))
     for dfn in defines:
@@ -378,7 +446,9 @@ def _parse_suggestions(raw_text):
         "globals":       globals_list,
         "includes":      includes,
         "defines":       defines,
+        "custom_types":  custom_types,
     }
+
 
 
 def _sanitize_list(items, label):
