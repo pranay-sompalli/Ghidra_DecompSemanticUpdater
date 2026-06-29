@@ -216,31 +216,7 @@ def run_decompiler(binary_path, model="openrouter/free"):
         all_includes.update(suggestions.get("includes", []))
         all_defines.update(suggestions.get("defines", []))
 
-    headers = []
-    
-    # 1. Standard C Headers
-    standard_includes = [
-        "#include <stdio.h>",
-        "#include <stdlib.h>",
-        "#include <stdbool.h>",
-        "#include <string.h>"
-    ]
-    for inc in standard_includes:
-        all_includes.add(inc)
 
-    # Deduplicate includes — normalize bare '<header.h>' to '#include <header.h>' first
-    seen_incs = set()
-    for inc in sorted(all_includes):
-        inc = inc.strip()
-        if not inc.startswith("#include"):
-            inc = "#include " + inc
-        key = inc.lower()
-        if key in seen_incs:
-            continue
-        seen_incs.add(key)
-        headers.append(inc)
-
-    headers.append("")
 
     # Decompile all functions first to know what types, variables, and aliases are used
     function_bodies = []
@@ -458,8 +434,6 @@ def run_decompiler(binary_path, model="openrouter/free"):
     headers.append("")
         
     final_output = headers + function_bodies
-
-
 
     # Write output
     os.makedirs(OUTPUT_DIR, exist_ok=True)

@@ -127,10 +127,48 @@ def apply_suggestions():
                         except Exception as ve:
                             print("  Could not update variable {}: {}".format(old_name, str(ve)))
 
-            # 3. Update Parameters (Simple case)
-            # Note: Complex signature updates (argc/argv) are best done in the main pipeline,
-            # but we can apply the names here if we have them.
-            
+            # 3. Update Parameters
+            parameters = data.get("parameters", [])
+            existing_params = {p.getName(): p for p in func.getParameters()}
+            for param_info in parameters:
+                if not isinstance(param_info, dict):
+                    continue
+                old_name = param_info.get("name")
+                new_name = param_info.get("new_name")
+                new_type_str = param_info.get("new_type_str") or param_info.get("type_str")
+                if old_name and old_name in existing_params:
+                    p = existing_params[old_name]
+                    new_type = None
+                    if new_type_str:
+                        try:
+                            from ghidra_decompiler.type_utils import resolve_type
+                            new_type = resolve_type(new_type_str, currentProgram)
+                        except Exception as te:
+                            print("  Could not resolve parameter type '{}': {}".format(new_type_str, str(te)))
+                    try:
+                        if new_type:
+                            from ghidra_decompiler.type_utils import is_array_type, is_pointer_type
+                            existing_type = p.getDataType()
+                            if not (is_array_type(existing_type) and is_pointer_type(new_type)):
+                                p.setDataType(new_type, False, True, SourceType.USER_DEFINED)
+                                print("  Set parameter type: {} -> {}".format(old_name, new_type.getName()))
+                            else:
+                                print("  Skipping parameter retype of array '{}' to pointer '{}'".format(old_name, new_type.getName()))
+                        if new_name:
+                            p.setName(new_name, SourceType.USER_DEFINED)
+                            print("  Renamed parameter: {} -> {}".format(old_name, new_name))
+                    except Exception as pe:
+                        print("  Could not update parameter {}: {}".format(old_name, str(pe)))
+
+            # 4. Rename Function
+            suggested_func_name = data.get("function_name")
+            if suggested_func_name and suggested_func_name != func_name:
+                try:
+                    func.setName(suggested_func_name, SourceType.USER_DEFINED)
+                    print("  Renamed function: {} -> {}".format(func_name, suggested_func_name))
+                except Exception as fe:
+                    print("  Could not rename function {} to {}: {}".format(func_name, suggested_func_name, str(fe)))
+
         print("Successfully applied AI suggestions to the Ghidra UI!")
     except Exception as e:
         print("Error applying suggestions: {}".format(str(e)))

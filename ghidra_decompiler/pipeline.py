@@ -33,30 +33,16 @@ class DecompilerPipeline:
         self.core_funcs = core_funcs
         self.model = model
         self.stored_suggestions = {}
-        self.global_context_c = None
 
     def _get_monitor(self):
         from ghidra.util.task import ConsoleTaskMonitor
         return ConsoleTaskMonitor()
 
-    def capture_global_context(self):
-        """
-        Identify 'main' or entry point to use as global reference context for AI consistency.
-        """
-        main_func = self.core_funcs.get("main")
-        if not main_func and self.core_funcs:
-            main_func = next(iter(self.core_funcs.values()))
-
-        if main_func:
-            print(f"[Context] Using '{main_func.getName()}' as global reference for AI consistency.")
-            m_results = self.iface.decompileFunction(main_func, 30, self._get_monitor())
-            if m_results.decompileCompleted():
-                self.global_context_c = m_results.getDecompiledFunction().getC()
-
     def run_semantic_and_ai_pass(self, skip_ai_for_funcs=None, clear_cache=False):
         """
         Pass 1: Setup basic semantics, extract referenced string literals, and dispatch
-        parallelized LLM requests to gather rich semantic suggestions.
+        parallelized LLM requests using local built-in analysis and usage-based contexts
+        to gather rich semantic suggestions.
         """
         import re
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -98,7 +84,6 @@ class DecompilerPipeline:
                     tasks_payloads.append({
                         "name": name,
                         "decompiled_c": initial_c,
-                        "context_c": self.global_context_c,
                         "caller_snippets": caller_snippets or None,
                         "callee_snippets": callee_snippets or None,
                         "string_literals": literals or None
@@ -116,7 +101,6 @@ class DecompilerPipeline:
                         get_openrouter_suggestions,
                         p["decompiled_c"],
                         model=self.model,
-                        context_c=p["context_c"],
                         caller_snippets=p["caller_snippets"],
                         callee_snippets=p["callee_snippets"],
                         string_literals=p["string_literals"],
@@ -166,7 +150,6 @@ class DecompilerPipeline:
         """
         Run the complete pipeline from start to finish.
         """
-        self.capture_global_context()
         self.run_semantic_and_ai_pass(skip_ai_for_funcs=skip_ai_for_funcs, clear_cache=clear_cache)
         
         # Collect, sanitize and register all custom types
